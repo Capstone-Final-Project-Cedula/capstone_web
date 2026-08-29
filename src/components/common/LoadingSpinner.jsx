@@ -1,18 +1,27 @@
 import React from 'react';
+import { Loader2 } from 'lucide-react';
 
-const LoadingSpinner = ({ size = 'md' }) => {
-  const sizes = {
-    sm: 'w-4 h-4',
-    md: 'w-8 h-8',
-    lg: 'w-12 h-12',
-  };
+const SIZE_MAP = {
+  sm: 'w-4 h-4',
+  md: 'w-6 h-6',
+  lg: 'w-9 h-9',
+};
 
+/**
+ * LoadingSpinner — same public API as before (`size` prop), redesigned
+ * visually. Used both standalone and inline (e.g. next to a caption).
+ */
+const LoadingSpinner = ({ size = 'md', className = '' }) => {
+  const sizeClass = SIZE_MAP[size] || SIZE_MAP.md;
   return (
-    <div className="flex justify-center items-center">
-      <div
-        className={`${sizes[size]} border-4 border-indigo-200 border-t-indigo-600 rounded-full animate-spin`}
+    <span className={`inline-flex items-center justify-center ${className}`} role="status">
+      <Loader2
+        className={`${sizeClass} text-[var(--color-primary)] animate-spin`}
+        style={{ animationDuration: '0.8s' }}
+        aria-hidden="true"
       />
-    </div>
+      <span className="sr-only">Loading…</span>
+    </span>
   );
 };
 

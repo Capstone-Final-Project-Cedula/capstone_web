@@ -1,10 +1,22 @@
 import React, { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { toast } from 'react-toastify';
+import {
+  QrCode,
+  Camera,
+  RefreshCw,
+  CheckCircle2,
+  Loader2,
+  Smartphone,
+  ScanLine,
+  FileCheck2,
+  ShieldCheck,
+} from 'lucide-react';
 import QRScanner from '../components/QRScanner/QRScanner';
 import { qrAPI } from '../api/qr';
 import { formsAPI } from '../api/forms';
-import LoadingSpinner from '../components/common/LoadingSpinner';
+import Card from '../components/ui/Card';
+import Button from '../components/ui/Button';
 
 const QRScan = () => {
   const [isLoading, setIsLoading] = useState(false);
@@ -25,7 +37,7 @@ const QRScan = () => {
 
       const result = await qrAPI.scan(qrToken);
       setScannedData(result.data);
-      toast.success('✅ QR Code scanned successfully! Form auto-populated.');
+      toast.success('QR code scanned successfully - form auto-populated.');
       setShowScanner(false);
     } catch (error) {
       console.error('Error scanning QR:', error);
@@ -39,7 +51,7 @@ const QRScan = () => {
     setIsLoading(true);
     try {
       const result = await formsAPI.issue(scannedData.form_data, 'qr');
-      toast.success(`✅ CTC #${result.data.ctc_number} issued successfully!`);
+      toast.success(`CTC #${result.data.ctc_number} issued successfully!`);
 
       const pdfResponse = await formsAPI.download(result.data.ctc_number);
       const url = window.URL.createObjectURL(
@@ -67,73 +79,172 @@ const QRScan = () => {
     setShowScanner(true);
   };
 
+  const scanSteps = [
+    {
+      title: 'Open mobile app',
+      description: 'Ask the citizen to open their CeduSync mobile QR screen.',
+      icon: Smartphone,
+    },
+    {
+      title: 'Display QR code',
+      description: 'Keep the code bright, steady, and inside the scanner frame.',
+      icon: QrCode,
+    },
+    {
+      title: 'Scan the code',
+      description: 'Use the camera scanner to validate the secure QR token.',
+      icon: ScanLine,
+    },
+    {
+      title: 'Auto-fill form',
+      description: 'Citizen details populate the CTC form after a successful scan.',
+      icon: FileCheck2,
+    },
+  ];
+
   return (
-    <div>
-      <h1 className="text-2xl font-bold text-gray-800 mb-4">📱 QR Code Scanner</h1>
-      <p className="text-gray-500 mb-6">
-        Scan the QR code from the citizen's mobile app to auto-populate the CTC form.
-      </p>
+    <div className="animate-fade-in">
+      <div className="mb-7">
+        <h1 className="font-display text-2xl font-bold text-[var(--color-neutral-900)] flex items-center gap-2.5">
+          <span className="w-9 h-9 rounded-[var(--radius-md)] bg-[var(--color-qr-light)] flex items-center justify-center">
+            <QrCode className="w-4.5 h-4.5 text-[var(--color-qr)]" aria-hidden="true" />
+          </span>
+          QR Code Scanner
+        </h1>
+        <p className="text-[var(--color-neutral-500)] mt-2 max-w-3xl">
+          Scan the QR code from the citizen's mobile app to auto-populate the CTC form.
+        </p>
+      </div>
 
-      {isLoading && (
-        <div className="flex justify-center items-center py-12">
-          <LoadingSpinner size="lg" />
-          <span className="ml-3 text-gray-600">Processing...</span>
-        </div>
-      )}
+      <div className="grid grid-cols-1 xl:grid-cols-[minmax(0,1fr)_360px] gap-6 items-start">
+        <div className="min-w-0">
+          {isLoading && (
+            <Card className="p-10 min-h-[360px] flex justify-center items-center gap-3">
+              <Loader2 className="w-6 h-6 text-[var(--color-primary)] animate-spin" aria-hidden="true" />
+              <span className="text-[var(--color-neutral-500)] text-sm font-medium">Processing...</span>
+            </Card>
+          )}
 
-      {!isLoading && showScanner && !scannedData && (
-        <div className="bg-white rounded-xl shadow-sm p-6">
-          <QRScanner onScan={handleQRScan} onClose={() => setShowScanner(false)} />
-        </div>
-      )}
-
-      {!isLoading && !showScanner && !scannedData && (
-        <div className="bg-white rounded-xl shadow-sm p-6 text-center">
-          <div className="text-6xl mb-4">📱</div>
-          <h3 className="text-lg font-medium text-gray-700 mb-2">Ready to Scan</h3>
-          <p className="text-gray-500 mb-4">
-            Click the button below to start scanning QR codes.
-          </p>
-          <button
-            onClick={() => setShowScanner(true)}
-            className="px-6 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition-colors"
-          >
-            📷 Start Scanner
-          </button>
-        </div>
-      )}
-
-      {!isLoading && scannedData && (
-        <div className="bg-white rounded-xl shadow-sm p-6">
-          <h2 className="text-xl font-semibold text-gray-800 mb-4">📋 Scanned Information</h2>
-          
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6">
-            {Object.entries(scannedData.form_data || {}).map(([key, value]) => (
-              <div key={key} className="p-3 bg-gray-50 rounded-lg">
-                <label className="block text-sm font-medium text-gray-600">
-                  {key.replace(/_/g, ' ').toUpperCase()}
-                </label>
-                <p className="text-lg font-medium">{value || '—'}</p>
+          {!isLoading && showScanner && !scannedData && (
+            <Card className="p-5 sm:p-6 animate-scale-in">
+              <div className="mb-5 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+                <div>
+                  <h2 className="font-display text-lg font-semibold text-[var(--color-neutral-800)]">
+                    Camera Scanner
+                  </h2>
+                  <p className="text-sm text-[var(--color-neutral-500)] mt-1">
+                    Center the QR code in the camera view and keep it steady.
+                  </p>
+                </div>
+                <span className="inline-flex items-center gap-2 rounded-[var(--radius-pill)] bg-[var(--color-success-light)] px-3 py-1 text-xs font-semibold text-[var(--color-success)]">
+                  <span className="h-2 w-2 rounded-full bg-[var(--color-success)]" aria-hidden="true" />
+                  Camera mode
+                </span>
               </div>
-            ))}
-          </div>
+              <div className="rounded-[var(--radius-lg)] border border-dashed border-[var(--color-neutral-200)] bg-[var(--color-neutral-25)] p-4 sm:p-6">
+                <QRScanner onScan={handleQRScan} onClose={() => setShowScanner(false)} />
+              </div>
+            </Card>
+          )}
 
-          <div className="flex flex-wrap gap-4 justify-end">
-            <button
-              onClick={handleReset}
-              className="px-6 py-2 bg-gray-200 text-gray-700 rounded-lg hover:bg-gray-300 transition-colors"
-            >
-              🔄 Scan Another
-            </button>
-            <button
-              onClick={handleIssueForm}
-              className="px-6 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors"
-            >
-              ✅ Issue CTC
-            </button>
-          </div>
+          {!isLoading && !showScanner && !scannedData && (
+            <Card className="p-8 sm:p-10 text-center animate-scale-in min-h-[360px] flex flex-col items-center justify-center">
+              <div className="w-16 h-16 rounded-full bg-[var(--color-qr-light)] flex items-center justify-center mx-auto mb-5">
+                <Camera className="w-7 h-7 text-[var(--color-qr)]" aria-hidden="true" />
+              </div>
+              <h3 className="font-display text-lg font-semibold text-[var(--color-neutral-800)] mb-1.5">
+                Ready to scan
+              </h3>
+              <p className="text-[var(--color-neutral-500)] mb-6 max-w-md mx-auto">
+                Start the scanner when the citizen has their QR code ready on their mobile device.
+              </p>
+              <Button icon={Camera} onClick={() => setShowScanner(true)}>
+                Start Scanner
+              </Button>
+            </Card>
+          )}
+
+          {!isLoading && scannedData && (
+            <Card className="p-6 sm:p-7 animate-scale-in">
+              <div className="flex items-center gap-2 mb-5">
+                <CheckCircle2 className="w-5 h-5 text-[var(--color-success)]" aria-hidden="true" />
+                <h2 className="font-display text-lg font-semibold text-[var(--color-neutral-800)]">
+                  Scanned Information
+                </h2>
+              </div>
+
+              <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3 mb-7">
+                {Object.entries(scannedData.form_data || {}).map(([key, value]) => (
+                  <div
+                    key={key}
+                    className="p-3.5 bg-[var(--color-neutral-50)] rounded-[var(--radius-md)] border border-[var(--color-neutral-100)]"
+                  >
+                    <label className="block text-xs font-semibold uppercase tracking-wide text-[var(--color-neutral-500)] mb-1">
+                      {key.replace(/_/g, ' ')}
+                    </label>
+                    <p className="text-[15px] font-medium text-[var(--color-neutral-800)] break-words">
+                      {value || '-'}
+                    </p>
+                  </div>
+                ))}
+              </div>
+
+              <div className="flex flex-wrap gap-3 justify-end">
+                <Button variant="secondary" icon={RefreshCw} onClick={handleReset}>
+                  Scan Another
+                </Button>
+                <Button icon={CheckCircle2} onClick={handleIssueForm}>
+                  Issue CTC
+                </Button>
+              </div>
+            </Card>
+          )}
         </div>
-      )}
+
+        <aside className="space-y-4">
+          <Card className="p-5">
+            <h2 className="font-display text-base font-semibold text-[var(--color-neutral-800)] mb-4">
+              How it works
+            </h2>
+            <div className="space-y-4">
+              {scanSteps.map((step, index) => {
+                const Icon = step.icon;
+                return (
+                  <div key={step.title} className="flex gap-3">
+                    <div className="w-9 h-9 rounded-[var(--radius-md)] bg-[var(--color-primary-light)] flex items-center justify-center shrink-0">
+                      <Icon className="w-4.5 h-4.5 text-[var(--color-primary)]" aria-hidden="true" />
+                    </div>
+                    <div className="min-w-0">
+                      <p className="text-sm font-semibold text-[var(--color-neutral-800)]">
+                        {index + 1}. {step.title}
+                      </p>
+                      <p className="text-sm text-[var(--color-neutral-500)] mt-0.5">
+                        {step.description}
+                      </p>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </Card>
+
+          <Card className="p-5 bg-[var(--color-voice-light)] border-[rgba(15,139,124,0.16)]">
+            <div className="flex gap-3">
+              <div className="w-9 h-9 rounded-[var(--radius-md)] bg-white/80 flex items-center justify-center shrink-0">
+                <ShieldCheck className="w-4.5 h-4.5 text-[var(--color-voice)]" aria-hidden="true" />
+              </div>
+              <div>
+                <h3 className="font-display text-sm font-semibold text-[var(--color-neutral-800)]">
+                  Secure and private
+                </h3>
+                <p className="text-sm text-[var(--color-neutral-600)] mt-1">
+                  QR data is used only to retrieve and populate the citizen's current CTC application.
+                </p>
+              </div>
+            </div>
+          </Card>
+        </aside>
+      </div>
     </div>
   );
 };

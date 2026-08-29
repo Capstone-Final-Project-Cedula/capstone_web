@@ -1,8 +1,13 @@
 import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { formsAPI } from '../api/forms';
-import LoadingSpinner from '../components/common/LoadingSpinner';
 import { toast } from 'react-toastify';
+import { Search, Plus, X, Download, FileSearch, Mic, QrCode } from 'lucide-react';
+import Card from '../components/ui/Card';
+import Button from '../components/ui/Button';
+import Badge from '../components/ui/Badge';
+import EmptyState from '../components/ui/EmptyState';
+import { SkeletonTableRow } from '../components/ui/Skeleton';
 
 const Records = () => {
   const [records, setRecords] = useState([]);
@@ -48,124 +53,144 @@ const Records = () => {
   };
 
   const filteredRecords = records.filter((record) => {
-    const searchMatch = 
+    const searchMatch =
       record.ctc_number?.toLowerCase().includes(searchTerm.toLowerCase()) ||
       record.applicant?.surname?.toLowerCase().includes(searchTerm.toLowerCase()) ||
       record.applicant?.given_name?.toLowerCase().includes(searchTerm.toLowerCase());
-    
+
     if (filter === 'voice') {
-      return searchMatch && record.processing_mode === 'voice';
+      return searchMatch && record.input_method === 'voice';
     }
     if (filter === 'qr') {
-      return searchMatch && record.processing_mode === 'qr';
+      return searchMatch && record.input_method === 'qr';
+    }
+    if (filter === 'manual') {
+      return searchMatch && record.input_method === 'manual';
     }
     return searchMatch;
   });
 
-  if (loading) return <LoadingSpinner size="lg" />;
+  const hasActiveFilters = searchTerm !== '' || filter !== 'all';
 
   return (
-    <div>
-      <div className="flex justify-between items-center mb-6">
+    <div className="animate-fade-in">
+      <div className="flex flex-col sm:flex-row sm:justify-between sm:items-center gap-4 mb-6">
         <div>
-          <h1 className="text-2xl font-bold text-gray-800">📄 Records</h1>
-          <p className="text-gray-500">View and manage all issued CTCs.</p>
+          <h1 className="font-display text-2xl font-bold text-[var(--color-neutral-900)]">Records</h1>
+          <p className="text-[var(--color-neutral-500)] mt-1">View and manage all issued CTCs.</p>
         </div>
-        <button
-          onClick={() => navigate('/new-application')}
-          className="bg-indigo-600 text-white px-4 py-2 rounded-lg hover:bg-indigo-700 transition-colors"
-        >
-          + New Application
-        </button>
+        <Button icon={Plus} onClick={() => navigate('/new-application')}>
+          New Application
+        </Button>
       </div>
 
       {/* Search and Filter */}
-      <div className="bg-white rounded-xl shadow-sm p-4 mb-6">
-        <div className="flex flex-wrap gap-4">
-          <div className="flex-1 min-w-[200px]">
+      <Card className="p-4 mb-5">
+        <div className="flex flex-wrap gap-3">
+          <div className="relative flex-1 min-w-[220px]">
+            <Search className="w-4 h-4 text-[var(--color-neutral-400)] absolute left-3.5 top-1/2 -translate-y-1/2" aria-hidden="true" />
             <input
               type="text"
-              placeholder="Search by name or CTC number..."
+              placeholder="Search by name or CTC number…"
               value={searchTerm}
               onChange={(e) => setSearchTerm(e.target.value)}
-              className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-transparent outline-none"
+              className="focusable w-full h-10 pl-10 pr-3.5 border border-[var(--color-neutral-200)] rounded-[var(--radius-md)] text-sm outline-none transition-all duration-150 focus:border-[var(--color-primary)] focus:shadow-[var(--shadow-focus)]"
             />
           </div>
           <select
             value={filter}
             onChange={(e) => setFilter(e.target.value)}
-            className="px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-transparent outline-none bg-white"
+            className="focusable h-10 px-3.5 border border-[var(--color-neutral-200)] rounded-[var(--radius-md)] text-sm bg-white outline-none transition-all duration-150 focus:border-[var(--color-primary)] focus:shadow-[var(--shadow-focus)]"
           >
             <option value="all">All Records</option>
             <option value="voice">Voice Processed</option>
             <option value="qr">QR Processed</option>
+            <option value="manual">Manual</option>
           </select>
-          <button
-            onClick={() => { setSearchTerm(''); setFilter('all'); }}
-            className="px-4 py-2 bg-gray-200 rounded-lg hover:bg-gray-300 transition-colors"
-          >
-            Clear Filters
-          </button>
+          {hasActiveFilters && (
+            <Button
+              variant="ghost"
+              size="md"
+              icon={X}
+              onClick={() => {
+                setSearchTerm('');
+                setFilter('all');
+              }}
+            >
+              Clear
+            </Button>
+          )}
         </div>
-      </div>
+      </Card>
 
       {/* Records Table */}
-      <div className="bg-white rounded-xl shadow-sm overflow-hidden">
+      <Card className="overflow-hidden">
         <div className="overflow-x-auto">
-          <table className="w-full">
-            <thead className="bg-gray-50 border-b border-gray-200">
+          <table className="w-full text-sm">
+            <thead className="bg-[var(--color-neutral-50)] border-b border-[var(--color-neutral-100)] sticky top-0 z-10">
               <tr>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                <th className="px-6 py-3 text-left text-xs font-semibold text-[var(--color-neutral-500)] uppercase tracking-wide">
                   CTC Number
                 </th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                <th className="px-6 py-3 text-left text-xs font-semibold text-[var(--color-neutral-500)] uppercase tracking-wide">
                   Applicant
                 </th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                <th className="px-6 py-3 text-left text-xs font-semibold text-[var(--color-neutral-500)] uppercase tracking-wide">
                   Date Issued
                 </th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                <th className="px-6 py-3 text-left text-xs font-semibold text-[var(--color-neutral-500)] uppercase tracking-wide">
                   Mode
                 </th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                <th className="px-6 py-3 text-left text-xs font-semibold text-[var(--color-neutral-500)] uppercase tracking-wide">
                   Actions
                 </th>
               </tr>
             </thead>
-            <tbody className="divide-y divide-gray-200">
-              {filteredRecords.length === 0 ? (
+            <tbody className="divide-y divide-[var(--color-neutral-100)]">
+              {loading ? (
+                Array.from({ length: 5 }).map((_, i) => <SkeletonTableRow key={i} columns={5} />)
+              ) : filteredRecords.length === 0 ? (
                 <tr>
-                  <td colSpan="5" className="px-6 py-4 text-center text-gray-500">
-                    No records found.
+                  <td colSpan="5">
+                    <EmptyState
+                      icon={FileSearch}
+                      title={hasActiveFilters ? 'No matching records' : 'No records yet'}
+                      description={
+                        hasActiveFilters
+                          ? 'Try a different name, CTC number, or filter.'
+                          : 'Issued CTCs will appear here once you start processing applications.'
+                      }
+                    />
                   </td>
                 </tr>
               ) : (
                 filteredRecords.map((record) => (
-                  <tr key={record.id} className="hover:bg-gray-50 transition-colors">
-                    <td className="px-6 py-4 font-medium text-indigo-600">
+                  <tr key={record.id} className="hover:bg-[var(--color-neutral-50)] transition-colors duration-150">
+                    <td className="px-6 py-4 font-mono-data font-semibold text-[var(--color-primary)]">
                       {record.ctc_number}
                     </td>
-                    <td className="px-6 py-4">
+                    <td className="px-6 py-4 text-[var(--color-neutral-800)]">
                       {record.applicant?.surname}, {record.applicant?.given_name}
                     </td>
-                    <td className="px-6 py-4 text-gray-600">
-                      {new Date(record.issued_date).toLocaleDateString()}
+                    <td className="px-6 py-4 text-[var(--color-neutral-500)]">
+                      {record.issued_at ? new Date(record.issued_at).toLocaleDateString() : '—'}
                     </td>
                     <td className="px-6 py-4">
-                      <span className={`px-2 py-1 rounded-full text-xs font-medium ${
-                        record.processing_mode === 'voice' 
-                          ? 'bg-purple-100 text-purple-700' 
-                          : 'bg-green-100 text-green-700'
-                      }`}>
-                        {record.processing_mode === 'voice' ? '🎤 Voice' : '📱 QR'}
-                      </span>
+                      {record.input_method === 'voice' ? (
+                        <Badge tone="voice" icon={Mic}>Voice</Badge>
+                      ) : record.input_method === 'qr' ? (
+                        <Badge tone="qr" icon={QrCode}>QR</Badge>
+                      ) : (
+                        <Badge tone="neutral">Manual</Badge>
+                      )}
                     </td>
                     <td className="px-6 py-4">
                       <button
                         onClick={() => handleDownload(record.ctc_number)}
-                        className="text-indigo-600 hover:text-indigo-800 font-medium"
+                        className="focusable inline-flex items-center gap-1.5 text-[var(--color-primary)] hover:text-[var(--color-primary-hover)] font-medium rounded-[var(--radius-sm)] transition-colors"
                       >
-                        📥 Download
+                        <Download className="w-3.5 h-3.5" aria-hidden="true" />
+                        Download
                       </button>
                     </td>
                   </tr>
@@ -174,7 +199,7 @@ const Records = () => {
             </tbody>
           </table>
         </div>
-      </div>
+      </Card>
     </div>
   );
 };

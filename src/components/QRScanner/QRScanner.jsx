@@ -1,9 +1,10 @@
 import React, { useState, useEffect, useRef } from 'react';
+import { AlertCircle, Camera, StopCircle } from 'lucide-react';
+import Button from '../ui/Button';
 
 const QRScanner = ({ onScan, onClose }) => {
   const [isScanning, setIsScanning] = useState(false);
   const [error, setError] = useState(null);
-  const scannerRef = useRef(null);
   const html5QrCodeRef = useRef(null);
 
   // Clean up on unmount
@@ -75,25 +76,28 @@ const QRScanner = ({ onScan, onClose }) => {
 
   return (
     <div className="relative">
-      <div id="qr-reader" className="w-full max-w-md mx-auto"></div>
-      
+      <div
+        id="qr-reader"
+        className="w-full max-w-xl min-h-[320px] mx-auto overflow-hidden rounded-[var(--radius-lg)] bg-white"
+      />
+
       {!isScanning && !error && (
-        <div className="text-center mt-4">
-          <button
-            onClick={startScanner}
-            className="px-6 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition-colors"
-          >
-            📷 Start Camera
-          </button>
+        <div className="text-center mt-5">
+          <Button icon={Camera} onClick={startScanner}>
+            Start Camera
+          </Button>
         </div>
       )}
 
       {error && (
-        <div className="text-center mt-4">
-          <p className="text-red-600 mb-2">{error}</p>
+        <div className="text-center mt-5">
+          <div className="max-w-xl mx-auto mb-3 rounded-[var(--radius-md)] border border-[var(--color-error-light)] bg-[var(--color-error-light)] px-4 py-3 text-sm font-medium text-[var(--color-error)] flex items-start gap-2 text-left">
+            <AlertCircle className="w-4 h-4 mt-0.5 shrink-0" aria-hidden="true" />
+            <p>{error}</p>
+          </div>
           <button
             onClick={() => setError(null)}
-            className="px-4 py-2 bg-gray-200 rounded-lg hover:bg-gray-300 transition-colors"
+            className="focusable h-10 px-4 rounded-[var(--radius-md)] bg-[var(--color-neutral-100)] text-sm font-semibold text-[var(--color-neutral-700)] transition-colors hover:bg-[var(--color-neutral-200)]"
           >
             Try Again
           </button>
@@ -101,13 +105,10 @@ const QRScanner = ({ onScan, onClose }) => {
       )}
 
       {isScanning && (
-        <div className="text-center mt-4">
-          <button
-            onClick={handleClose}
-            className="px-4 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 transition-colors"
-          >
-            ⏹️ Stop Scanner
-          </button>
+        <div className="text-center mt-5">
+          <Button variant="danger" icon={StopCircle} onClick={handleClose}>
+            Stop Scanner
+          </Button>
         </div>
       )}
     </div>

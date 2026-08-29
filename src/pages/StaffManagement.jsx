@@ -1,27 +1,47 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useAuth } from '../contexts/AuthContext';
 import { authAPI } from '../api/auth';
 import { toast } from 'react-toastify';
-import LoadingSpinner from '../components/common/LoadingSpinner';
+import { Users, Plus, X, Lock, ShieldOff, UserPlus, Power } from 'lucide-react';
+import Card from '../components/ui/Card';
+import Button from '../components/ui/Button';
+import Badge from '../components/ui/Badge';
+import Input from '../components/ui/Input';
+import { SkeletonTableRow } from '../components/ui/Skeleton';
 
 const StaffManagement = () => {
   const { isAdmin } = useAuth();
-  const [staff, setStaff] = useState([]);
+  const [staffList, setStaffList] = useState([]);
+  const [listLoading, setListLoading] = useState(true);
   const [loading, setLoading] = useState(false);
+  const [togglingId, setTogglingId] = useState(null);
   const [showAddForm, setShowAddForm] = useState(false);
   const [formData, setFormData] = useState({
     username: '',
     password: '',
     full_name: '',
     email: '',
-    role: 'STAFF',
+    role: 'staff',
   });
 
-  // Mock staff data - In production, fetch from API
-  const [staffList] = useState([
-    { id: 1, username: 'admin', full_name: 'System Admin', role: 'ADMIN', email: 'admin@barangay.gov.ph' },
-    { id: 2, username: 'jdelacruz', full_name: 'Juan Dela Cruz', role: 'STAFF', email: 'juan@barangay.gov.ph' },
-  ]);
+  useEffect(() => {
+    if (isAdmin) {
+      fetchStaff();
+    }
+  }, [isAdmin]);
+
+  const fetchStaff = async () => {
+    setListLoading(true);
+    try {
+      const response = await authAPI.getStaff();
+      setStaffList(response.data);
+    } catch (error) {
+      console.error('Error fetching staff:', error);
+      toast.error(error.response?.data?.detail || 'Error loading staff');
+    } finally {
+      setListLoading(false);
+    }
+  };
 
   const handleAddStaff = async (e) => {
     e.preventDefault();
@@ -31,6 +51,7 @@ const StaffManagement = () => {
       toast.success('Staff added successfully!');
       setShowAddForm(false);
       setFormData({ username: '', password: '', full_name: '', email: '', role: 'STAFF' });
+      fetchStaff();
     } catch (error) {
       toast.error(error.response?.data?.detail || 'Error adding staff');
     } finally {
@@ -38,145 +59,191 @@ const StaffManagement = () => {
     }
   };
 
+  const handleToggleActive = async (userId) => {
+    setTogglingId(userId);
+    try {
+      const response = await authAPI.toggleStaffActive(userId);
+      setStaffList((prev) =>
+        prev.map((person) =>
+          person.id === userId ? { ...person, is_active: response.data.is_active } : person
+        )
+      );
+      toast.success(response.data.is_active ? 'Account activated' : 'Account deactivated');
+    } catch (error) {
+      console.error('Error toggling staff status:', error);
+      toast.error(error.response?.data?.detail || 'Error updating staff status');
+    } finally {
+      setTogglingId(null);
+    }
+  };
+
   if (!isAdmin) {
     return (
-      <div className="bg-white rounded-xl shadow-sm p-8 text-center">
-        <div className="text-6xl mb-4">🔒</div>
-        <h2 className="text-2xl font-bold text-gray-800 mb-2">Access Denied</h2>
-        <p className="text-gray-500">You need administrator privileges to access this page.</p>
-      </div>
+      <Card className="p-10 text-center max-w-lg mx-auto mt-10 animate-scale-in">
+        <div className="w-16 h-16 rounded-full bg-[var(--color-error-light)] flex items-center justify-center mx-auto mb-5">
+          <ShieldOff className="w-7 h-7 text-[var(--color-error)]" aria-hidden="true" />
+        </div>
+        <h2 className="font-display text-xl font-bold text-[var(--color-neutral-900)] mb-1.5">
+          Access denied
+        </h2>
+        <p className="text-[var(--color-neutral-500)]">
+          You need administrator privileges to access this page.
+        </p>
+      </Card>
     );
   }
 
   return (
-    <div>
-      <div className="flex justify-between items-center mb-6">
+    <div className="animate-fade-in">
+      <div className="flex flex-col sm:flex-row sm:justify-between sm:items-center gap-4 mb-6">
         <div>
-          <h1 className="text-2xl font-bold text-gray-800">👥 Staff Management</h1>
-          <p className="text-gray-500">Manage barangay personnel accounts.</p>
+          <h1 className="font-display text-2xl font-bold text-[var(--color-neutral-900)] flex items-center gap-2.5">
+            <span className="w-9 h-9 rounded-[var(--radius-md)] bg-[var(--color-primary-light)] flex items-center justify-center">
+              <Users className="w-4.5 h-4.5 text-[var(--color-primary)]" aria-hidden="true" />
+            </span>
+            Staff Management
+          </h1>
+          <p className="text-[var(--color-neutral-500)] mt-2">Manage barangay personnel accounts.</p>
         </div>
-        <button
+        <Button
+          icon={showAddForm ? X : Plus}
+          variant={showAddForm ? 'secondary' : 'primary'}
           onClick={() => setShowAddForm(!showAddForm)}
-          className="bg-indigo-600 text-white px-4 py-2 rounded-lg hover:bg-indigo-700 transition-colors"
         >
-          + Add Staff
-        </button>
+          {showAddForm ? 'Close' : 'Add Staff'}
+        </Button>
       </div>
 
       {showAddForm && (
-        <div className="bg-white rounded-xl shadow-sm p-6 mb-6">
-          <h3 className="text-lg font-semibold text-gray-800 mb-4">Add New Staff</h3>
-          <form onSubmit={handleAddStaff}>
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+        <Card className="p-6 mb-6 animate-scale-in">
+          <h3 className="font-display text-base font-semibold text-[var(--color-neutral-800)] mb-5">
+            Add new staff
+          </h3>
+          <form onSubmit={handleAddStaff} noValidate>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
+              <Input
+                label="Username"
+                value={formData.username}
+                onChange={(e) => setFormData({ ...formData, username: e.target.value })}
+                required
+              />
+              <Input
+                label="Password"
+                type="password"
+                icon={Lock}
+                value={formData.password}
+                onChange={(e) => setFormData({ ...formData, password: e.target.value })}
+                required
+              />
+              <Input
+                label="Full Name"
+                value={formData.full_name}
+                onChange={(e) => setFormData({ ...formData, full_name: e.target.value })}
+                required
+              />
+              <Input
+                label="Email"
+                type="email"
+                value={formData.email}
+                onChange={(e) => setFormData({ ...formData, email: e.target.value })}
+              />
               <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">Username</label>
-                <input
-                  type="text"
-                  value={formData.username}
-                  onChange={(e) => setFormData({ ...formData, username: e.target.value })}
-                  className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
-                  required
-                />
-              </div>
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">Password</label>
-                <input
-                  type="password"
-                  value={formData.password}
-                  onChange={(e) => setFormData({ ...formData, password: e.target.value })}
-                  className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
-                  required
-                />
-              </div>
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">Full Name</label>
-                <input
-                  type="text"
-                  value={formData.full_name}
-                  onChange={(e) => setFormData({ ...formData, full_name: e.target.value })}
-                  className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
-                  required
-                />
-              </div>
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">Email</label>
-                <input
-                  type="email"
-                  value={formData.email}
-                  onChange={(e) => setFormData({ ...formData, email: e.target.value })}
-                  className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
-                />
-              </div>
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">Role</label>
+                <label className="block text-sm font-medium text-[var(--color-neutral-700)] mb-1.5">
+                  Role
+                </label>
                 <select
                   value={formData.role}
                   onChange={(e) => setFormData({ ...formData, role: e.target.value })}
-                  className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
+                  className="focusable w-full h-11 px-3.5 border border-[var(--color-neutral-200)] rounded-[var(--radius-md)] text-[15px] bg-white outline-none transition-all duration-150 focus:border-[var(--color-primary)] focus:shadow-[var(--shadow-focus)]"
                 >
-                  <option value="STAFF">Staff</option>
-                  <option value="ADMIN">Admin</option>
+                  <option value="staff">Staff</option>
+                  <option value="admin">Admin</option>
                 </select>
               </div>
             </div>
-            <div className="flex gap-4 mt-4">
-              <button
-                type="submit"
-                disabled={loading}
-                className="px-6 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition-colors disabled:opacity-50"
-              >
-                {loading ? 'Adding...' : 'Add Staff'}
-              </button>
-              <button
-                type="button"
-                onClick={() => setShowAddForm(false)}
-                className="px-6 py-2 bg-gray-200 text-gray-700 rounded-lg hover:bg-gray-300 transition-colors"
-              >
+            <div className="flex gap-3 mt-6 pt-5 border-t border-[var(--color-neutral-100)]">
+              <Button type="submit" loading={loading} disabled={loading} icon={UserPlus}>
+                {loading ? 'Adding…' : 'Add Staff'}
+              </Button>
+              <Button type="button" variant="secondary" onClick={() => setShowAddForm(false)}>
                 Cancel
-              </button>
+              </Button>
             </div>
           </form>
-        </div>
+        </Card>
       )}
 
-      <div className="bg-white rounded-xl shadow-sm overflow-hidden">
-        <table className="w-full">
-          <thead className="bg-gray-50 border-b border-gray-200">
-            <tr>
-              <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                Username
-              </th>
-              <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                Full Name
-              </th>
-              <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                Email
-              </th>
-              <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                Role
-              </th>
-            </tr>
-          </thead>
-          <tbody className="divide-y divide-gray-200">
-            {staffList.map((person) => (
-              <tr key={person.id} className="hover:bg-gray-50 transition-colors">
-                <td className="px-6 py-4 font-medium">{person.username}</td>
-                <td className="px-6 py-4">{person.full_name}</td>
-                <td className="px-6 py-4 text-gray-600">{person.email || '—'}</td>
-                <td className="px-6 py-4">
-                  <span className={`px-2 py-1 rounded-full text-xs font-medium ${
-                    person.role === 'ADMIN' 
-                      ? 'bg-red-100 text-red-700' 
-                      : 'bg-blue-100 text-blue-700'
-                  }`}>
-                    {person.role}
-                  </span>
-                </td>
+      <Card className="overflow-hidden">
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead className="bg-[var(--color-neutral-50)] border-b border-[var(--color-neutral-100)]">
+              <tr>
+                <th className="px-6 py-3 text-left text-xs font-semibold text-[var(--color-neutral-500)] uppercase tracking-wide">
+                  Username
+                </th>
+                <th className="px-6 py-3 text-left text-xs font-semibold text-[var(--color-neutral-500)] uppercase tracking-wide">
+                  Full Name
+                </th>
+                <th className="px-6 py-3 text-left text-xs font-semibold text-[var(--color-neutral-500)] uppercase tracking-wide">
+                  Email
+                </th>
+                <th className="px-6 py-3 text-left text-xs font-semibold text-[var(--color-neutral-500)] uppercase tracking-wide">
+                  Role
+                </th>
+                <th className="px-6 py-3 text-left text-xs font-semibold text-[var(--color-neutral-500)] uppercase tracking-wide">
+                  Status
+                </th>
+                <th className="px-6 py-3 text-left text-xs font-semibold text-[var(--color-neutral-500)] uppercase tracking-wide">
+                  Actions
+                </th>
               </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
+            </thead>
+            <tbody className="divide-y divide-[var(--color-neutral-100)]">
+              {listLoading ? (
+                Array.from({ length: 3 }).map((_, i) => <SkeletonTableRow key={i} columns={6} />)
+              ) : staffList.length === 0 ? (
+                <tr>
+                  <td colSpan="6" className="px-6 py-10 text-center text-[var(--color-neutral-500)]">
+                    No staff accounts found.
+                  </td>
+                </tr>
+              ) : (
+                staffList.map((person) => (
+                  <tr key={person.id} className="hover:bg-[var(--color-neutral-50)] transition-colors duration-150">
+                    <td className="px-6 py-4 font-medium text-[var(--color-neutral-800)]">{person.username}</td>
+                    <td className="px-6 py-4 text-[var(--color-neutral-800)]">{person.full_name}</td>
+                    <td className="px-6 py-4 text-[var(--color-neutral-500)]">{person.email || '—'}</td>
+                    <td className="px-6 py-4">
+                      <Badge tone={person.role === 'admin' ? 'error' : 'info'}>
+                        {person.role?.toUpperCase()}
+                      </Badge>
+                    </td>
+                    <td className="px-6 py-4">
+                      <Badge tone={person.is_active ? 'success' : 'neutral'}>
+                        {person.is_active ? 'Active' : 'Inactive'}
+                      </Badge>
+                    </td>
+                    <td className="px-6 py-4">
+                      <button
+                        onClick={() => handleToggleActive(person.id)}
+                        disabled={togglingId === person.id}
+                        className="focusable inline-flex items-center gap-1.5 text-[var(--color-primary)] hover:text-[var(--color-primary-hover)] font-medium rounded-[var(--radius-sm)] transition-colors disabled:opacity-50"
+                      >
+                        <Power className="w-3.5 h-3.5" aria-hidden="true" />
+                        {togglingId === person.id
+                          ? 'Updating…'
+                          : person.is_active
+                          ? 'Deactivate'
+                          : 'Activate'}
+                      </button>
+                    </td>
+                  </tr>
+                ))
+              )}
+            </tbody>
+          </table>
+        </div>
+      </Card>
     </div>
   );
 };

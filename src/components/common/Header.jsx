@@ -1,26 +1,31 @@
 import React from 'react';
 import { useAuth } from '../../contexts/AuthContext';
+import { Landmark } from 'lucide-react';
 
 const Header = () => {
   const { user } = useAuth();
 
   return (
-    <header className="bg-white border-b border-gray-200 px-6 py-4">
-      <div className="flex justify-between items-center">
-        <div>
-          <h2 className="text-xl font-semibold text-gray-800">
-            🏛️ Barangay San Roque, Mambajao, Camiguin
+    <header className="dashboard-shell-header bg-white border-b border-[var(--color-neutral-100)] px-4 sm:px-6 py-3.5">
+      <div className="flex justify-between items-center gap-4">
+        <div className="flex items-center gap-2.5 min-w-0">
+          <Landmark className="w-4.5 h-4.5 text-[var(--color-primary)] shrink-0" aria-hidden="true" />
+          <h2 className="font-display text-[15px] font-semibold text-[var(--color-neutral-800)] truncate">
+            Barangay San Roque, Mambajao, Camiguin
           </h2>
         </div>
-        <div className="flex items-center space-x-4">
-          <div className="text-right">
-            <div className="text-sm font-medium text-gray-700">
+
+        <div className="flex items-center gap-3 shrink-0">
+          <div className="text-right hidden sm:block">
+            <div className="text-sm font-semibold text-[var(--color-neutral-800)] leading-tight">
               {user?.full_name || 'Staff'}
             </div>
-            <div className="text-xs text-gray-500">{user?.role || 'User'}</div>
+            <div className="text-xs text-[var(--color-neutral-500)] leading-tight mt-0.5">
+              {user?.role || 'User'}
+            </div>
           </div>
-          <div className="w-10 h-10 rounded-full bg-indigo-100 flex items-center justify-center">
-            <span className="text-indigo-600 font-bold text-lg">
+          <div className="w-9 h-9 rounded-full bg-[var(--color-primary-light)] flex items-center justify-center ring-1 ring-[var(--color-neutral-100)]">
+            <span className="font-display text-[var(--color-primary)] font-bold text-sm">
               {user?.full_name?.charAt(0) || 'S'}
             </span>
           </div>

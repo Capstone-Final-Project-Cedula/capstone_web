@@ -1,0 +1,161 @@
+/*
+  Design tokens — Cedula Processing System
+  --------------------------------------------------------------
+  A civic document system with two intake modes: voice-guided
+  kiosk and QR handoff from the citizen's phone. The palette
+  keeps an official, trustworthy "seal" blue as the primary,
+  and gives each intake mode its own quiet accent (teal for
+  voice, amber for QR) so mode is always readable at a glance
+  without relying on emoji.
+
+  Import once, globally:
+    import './styles/tokens.css';
+*/
+
+@import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@500;600;700;800&family=Inter:wght@400;500;600;700&family=IBM+Plex+Mono:wght@500;600&display=swap');
+
+:root {
+  /* ---------- Color: brand ---------- */
+  --color-primary: #3B4BC4;       /* seal blue — primary actions, brand */
+  --color-primary-hover: #2F3BA3;
+  --color-primary-active: #262F84;
+  --color-primary-light: #EDEFFC;
+  --color-primary-ring: rgba(59, 75, 196, 0.18);
+
+  /* ---------- Color: intake modes ---------- */
+  --color-voice: #0F8B7C;         /* teal — voice-processed */
+  --color-voice-light: #E7F6F3;
+  --color-qr: #B5670A;            /* amber — QR-processed */
+  --color-qr-light: #FCF1E1;
+
+  /* ---------- Color: semantic ---------- */
+  --color-success: #0E8F5C;
+  --color-success-light: #E6F6EE;
+  --color-warning: #B5670A;
+  --color-warning-light: #FCF1E1;
+  --color-error: #D0342C;
+  --color-error-light: #FBEAE9;
+  --color-info: #1D6FB8;
+  --color-info-light: #EAF3FB;
+
+  /* ---------- Color: app shell (sidebar) ---------- */
+  --color-shell-bg: #1B2154;          /* deep navy-indigo, distinct from primary */
+  --color-shell-bg-raised: #242C68;
+  --color-shell-border: rgba(255, 255, 255, 0.08);
+  --color-shell-text: rgba(255, 255, 255, 0.68);
+  --color-shell-text-active: #FFFFFF;
+  --color-shell-item-hover: rgba(255, 255, 255, 0.06);
+  --color-shell-item-active: rgba(255, 255, 255, 0.12);
+  --color-shell-accent: #7C89F0;      /* lighter tint of primary, for active rail */
+
+  /* ---------- Color: neutrals (slate, slightly warm) ---------- */
+  --color-neutral-0: #FFFFFF;
+  --color-neutral-25: #FBFBFC;
+  --color-neutral-50: #F6F7F9;
+  --color-neutral-100: #EEF0F3;
+  --color-neutral-200: #E2E5EA;
+  --color-neutral-300: #CBD0D9;
+  --color-neutral-400: #9BA3B2;
+  --color-neutral-500: #6B7386;
+  --color-neutral-600: #4C5366;
+  --color-neutral-700: #363C4D;
+  --color-neutral-800: #22262F;
+  --color-neutral-900: #14161C;
+
+  /* ---------- Type ---------- */
+  --font-display: 'Plus Jakarta Sans', system-ui, sans-serif;
+  --font-body: 'Inter', system-ui, sans-serif;
+  --font-mono: 'IBM Plex Mono', ui-monospace, monospace;
+
+  /* ---------- Radius ---------- */
+  --radius-sm: 8px;
+  --radius-md: 12px;
+  --radius-lg: 16px;
+  --radius-xl: 20px;
+  --radius-pill: 999px;
+
+  /* ---------- Shadow (soft, low-contrast) ---------- */
+  --shadow-xs: 0 1px 2px rgba(20, 22, 28, 0.04);
+  --shadow-sm: 0 2px 6px rgba(20, 22, 28, 0.05), 0 1px 2px rgba(20, 22, 28, 0.04);
+  --shadow-md: 0 8px 20px rgba(20, 22, 28, 0.07), 0 2px 6px rgba(20, 22, 28, 0.04);
+  --shadow-lg: 0 20px 40px rgba(20, 22, 28, 0.10), 0 4px 10px rgba(20, 22, 28, 0.05);
+  --shadow-focus: 0 0 0 4px var(--color-primary-ring);
+
+  /* ---------- Motion ---------- */
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  --duration-fast: 120ms;
+  --duration-base: 180ms;
+  --duration-slow: 280ms;
+}
+
+/* ---------- Base layer ---------- */
+* {
+  -webkit-font-smoothing: antialiased;
+}
+
+body {
+  font-family: var(--font-body);
+  color: var(--color-neutral-800);
+  background: var(--color-neutral-50);
+}
+
+h1, h2, h3, h4, .font-display {
+  font-family: var(--font-display);
+  letter-spacing: -0.01em;
+}
+
+.font-mono-data {
+  font-family: var(--font-mono);
+  letter-spacing: -0.01em;
+}
+
+/* Respect reduced motion everywhere */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+/* ---------- Reusable motion keyframes ---------- */
+@keyframes fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes rise-in {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes scale-in {
+  from { opacity: 0; transform: scale(0.97); }
+  to { opacity: 1; transform: scale(1); }
+}
+
+@keyframes shimmer {
+  0% { background-position: -400px 0; }
+  100% { background-position: 400px 0; }
+}
+
+@keyframes spin-smooth {
+  to { transform: rotate(360deg); }
+}
+
+.animate-fade-in { animation: fade-in var(--duration-base) var(--ease-out) both; }
+.animate-rise-in { animation: rise-in var(--duration-slow) var(--ease-out) both; }
+.animate-scale-in { animation: scale-in var(--duration-base) var(--ease-out) both; }
+
+.skeleton {
+  background: linear-gradient(90deg, var(--color-neutral-100) 0%, var(--color-neutral-200) 50%, var(--color-neutral-100) 100%);
+  background-size: 800px 100%;
+  animation: shimmer 1.6s linear infinite;
+}
+
+/* ---------- Focus-visible baseline (accessibility) ---------- */
+.focusable:focus-visible {
+  outline: none;
+  box-shadow: var(--shadow-focus);
+}

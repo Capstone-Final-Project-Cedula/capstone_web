@@ -2,6 +2,9 @@ import React, { useState } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
 import { toast } from 'react-toastify';
+import { LockKeyhole, LogIn, UserRound } from 'lucide-react';
+import Input from '../components/ui/Input';
+import Button from '../components/ui/Button';
 
 const Login = () => {
   const [username, setUsername] = useState('');
@@ -28,61 +31,65 @@ const Login = () => {
   };
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-indigo-500 to-purple-600 flex items-center justify-center p-4">
-      <div className="bg-white rounded-2xl shadow-xl max-w-md w-full p-8">
-        <div className="text-center mb-8">
-          <div className="w-20 h-20 bg-indigo-100 rounded-full flex items-center justify-center mx-auto mb-4 text-4xl">
-            📋
+    <div className="login-shell min-h-screen flex items-center justify-center p-4 sm:p-6 relative overflow-hidden">
+      <div className="login-grid" aria-hidden="true" />
+      <div className="login-light login-light-primary" aria-hidden="true" />
+      <div className="login-light login-light-teal" aria-hidden="true" />
+
+      <div className="w-full max-w-md animate-rise-in relative z-10">
+        <div className="login-card rounded-[var(--radius-xl)] p-7 sm:p-10">
+          <div className="text-center mb-8">
+            <div className="login-logo-wrap mx-auto mb-5" aria-hidden="true">
+              <img
+                src="/logo-transparent.png"
+                alt=""
+                className="login-logo"
+                draggable="false"
+              />
+            </div>
+            <h1 className="font-display text-3xl font-extrabold text-[var(--color-neutral-900)] leading-tight">
+              Cedu<span className="text-[var(--color-primary)]">Sync</span>
+            </h1>
+            <p className="text-sm font-medium text-[var(--color-neutral-600)] mt-2">
+              Barangay San Roque &middot; Mambajao, Camiguin
+            </p>
           </div>
-          <h2 className="text-2xl font-bold text-gray-800">
-            Cedula Processing System
-          </h2>
-          <p className="text-gray-500 text-sm mt-1">
-            Barangay San Roque, Mambajao, Camiguin
-          </p>
+
+          <form onSubmit={handleSubmit} noValidate>
+            <div className="space-y-4">
+              <Input
+                label="Username"
+                icon={UserRound}
+                value={username}
+                onChange={(e) => setUsername(e.target.value)}
+                placeholder="Enter username"
+                autoComplete="username"
+                required
+              />
+              <Input
+                label="Password"
+                icon={LockKeyhole}
+                type="password"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                placeholder="Enter password"
+                autoComplete="current-password"
+                required
+              />
+            </div>
+
+            <Button
+              type="submit"
+              loading={loading}
+              disabled={loading}
+              icon={LogIn}
+              className="login-submit w-full mt-6 shadow-[0_12px_24px_rgba(59,75,196,0.22)] hover:shadow-[0_16px_34px_rgba(59,75,196,0.28)] hover:-translate-y-0.5"
+              size="lg"
+            >
+              {loading ? 'Logging in...' : 'Log in'}
+            </Button>
+          </form>
         </div>
-
-        <form onSubmit={handleSubmit}>
-          <div className="mb-4">
-            <label className="block text-sm font-medium text-gray-700 mb-1">
-              Username
-            </label>
-            <input
-              type="text"
-              value={username}
-              onChange={(e) => setUsername(e.target.value)}
-              className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
-              placeholder="Enter username"
-              required
-            />
-          </div>
-
-          <div className="mb-6">
-            <label className="block text-sm font-medium text-gray-700 mb-1">
-              Password
-            </label>
-            <input
-              type="password"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
-              placeholder="Enter password"
-              required
-            />
-          </div>
-
-          <button
-            type="submit"
-            disabled={loading}
-            className="w-full bg-indigo-600 text-white py-2 px-4 rounded-lg hover:bg-indigo-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-          >
-            {loading ? 'Logging in...' : 'Login'}
-          </button>
-
-          <div className="mt-4 text-center text-sm text-gray-500">
-            Default: admin / admin1234
-          </div>
-        </form>
       </div>
     </div>
   );
