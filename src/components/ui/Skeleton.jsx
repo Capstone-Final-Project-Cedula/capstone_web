@@ -14,12 +14,12 @@ export const SkeletonCircle = ({ size = '2.5rem', className = '' }) => (
 /** A stat-card sized skeleton, matching the dashboard KPI cards. */
 export const SkeletonStatCard = () => (
   <div className="bg-white rounded-[var(--radius-lg)] border border-[var(--color-neutral-100)] shadow-[var(--shadow-sm)] p-6">
-    <div className="flex items-center justify-between">
-      <div className="space-y-2 flex-1">
+    <div className="flex items-start justify-between gap-4">
+      <div className="space-y-2.5 flex-1">
         <SkeletonLine width="60%" height="0.75rem" />
-        <SkeletonLine width="40%" height="1.5rem" />
+        <SkeletonLine width="45%" height="1.7rem" />
       </div>
-      <SkeletonCircle size="2.75rem" />
+      <SkeletonCircle size="3rem" className="rounded-2xl" />
     </div>
   </div>
 );

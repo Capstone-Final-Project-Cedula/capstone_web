@@ -36,10 +36,16 @@ const Input = React.forwardRef(function Input(
         </label>
       )}
 
-      <div className="relative">
+      <div className="relative group/input">
         {Icon && (
           <Icon
-            className="w-4 h-4 text-[var(--color-neutral-400)] absolute left-3.5 top-1/2 -translate-y-1/2 pointer-events-none"
+            className={[
+              'w-4 h-4 absolute left-3.5 top-1/2 -translate-y-1/2 pointer-events-none',
+              'transition-colors duration-150',
+              error
+                ? 'text-[var(--color-error)]'
+                : 'text-[var(--color-neutral-400)] group-focus-within/input:text-[var(--color-primary)]',
+            ].join(' ')}
             aria-hidden="true"
           />
         )}
@@ -59,7 +65,7 @@ const Input = React.forwardRef(function Input(
             isPassword ? 'pr-10' : 'pr-3.5',
             error
               ? 'border-[var(--color-error)] focus:shadow-[0_0_0_4px_rgba(208,52,44,0.12)]'
-              : 'border-[var(--color-neutral-200)] focus:border-[var(--color-primary)] focus:shadow-[var(--shadow-focus)]',
+              : 'border-[var(--color-neutral-200)] hover:border-[var(--color-neutral-300)] focus:border-[var(--color-primary)] focus:shadow-[var(--shadow-focus)]',
             className,
           ].join(' ')}
           {...rest}

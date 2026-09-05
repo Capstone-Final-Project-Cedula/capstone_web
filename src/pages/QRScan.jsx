@@ -104,29 +104,42 @@ const QRScan = () => {
 
   return (
     <div className="animate-fade-in">
-      <div className="mb-7">
-        <h1 className="font-display text-2xl font-bold text-[var(--color-neutral-900)] flex items-center gap-2.5">
-          <span className="w-9 h-9 rounded-[var(--radius-md)] bg-[var(--color-qr-light)] flex items-center justify-center">
-            <QrCode className="w-4.5 h-4.5 text-[var(--color-qr)]" aria-hidden="true" />
-          </span>
-          QR Code Scanner
-        </h1>
-        <p className="text-[var(--color-neutral-500)] mt-2 max-w-3xl">
-          Scan the QR code from the citizen's mobile app to auto-populate the CTC form.
-        </p>
+      <div className="mb-7 flex items-start justify-between gap-4 flex-wrap">
+        <div>
+          <h1 className="font-display text-2xl font-bold text-[var(--color-neutral-900)] flex items-center gap-2.5">
+            <span className="w-9 h-9 rounded-[var(--radius-md)] bg-[var(--color-qr-light)] flex items-center justify-center">
+              <QrCode className="w-4.5 h-4.5 text-[var(--color-qr)]" aria-hidden="true" />
+            </span>
+            QR Code Scanner
+          </h1>
+          <p className="text-[var(--color-neutral-500)] mt-2 max-w-3xl">
+            Scan the QR code from the citizen's mobile app to auto-populate the CTC form.
+          </p>
+        </div>
+
+        {/* Live status indicator — orients the user at a glance without reading the card below */}
+        <div className="qr-status-strip">
+          <span
+            className={`qr-status-dot ${
+              scannedData ? 'qr-status-dot--done' : showScanner ? 'qr-status-dot--active' : ''
+            }`}
+            aria-hidden="true"
+          />
+          {scannedData ? 'Scan complete' : showScanner ? 'Scanner active' : 'Idle'}
+        </div>
       </div>
 
-      <div className="grid grid-cols-1 xl:grid-cols-[minmax(0,1fr)_360px] gap-6 items-start">
+      <div className="grid grid-cols-1 xl:grid-cols-[minmax(0,1fr)_340px] gap-6 items-start">
         <div className="min-w-0">
           {isLoading && (
-            <Card className="p-10 min-h-[360px] flex justify-center items-center gap-3">
+            <Card className="p-10 min-h-[380px] flex flex-col justify-center items-center gap-3">
               <Loader2 className="w-6 h-6 text-[var(--color-primary)] animate-spin" aria-hidden="true" />
               <span className="text-[var(--color-neutral-500)] text-sm font-medium">Processing...</span>
             </Card>
           )}
 
           {!isLoading && showScanner && !scannedData && (
-            <Card className="p-5 sm:p-6 animate-scale-in">
+            <Card className="p-5 sm:p-6">
               <div className="mb-5 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
                 <div>
                   <h2 className="font-display text-lg font-semibold text-[var(--color-neutral-800)]">
@@ -141,15 +154,22 @@ const QRScan = () => {
                   Camera mode
                 </span>
               </div>
-              <div className="rounded-[var(--radius-lg)] border border-dashed border-[var(--color-neutral-200)] bg-[var(--color-neutral-25)] p-4 sm:p-6">
+
+              {/* Targeting frame: corner brackets give the camera area a clear "aim here" zone,
+                  purely decorative and non-interactive — the scanner component itself is untouched. */}
+              <div className="qr-target-frame rounded-[var(--radius-lg)] bg-[var(--color-neutral-25)] p-4 sm:p-6">
+                <span className="qr-corner qr-corner--tl" aria-hidden="true" />
+                <span className="qr-corner qr-corner--tr" aria-hidden="true" />
+                <span className="qr-corner qr-corner--bl" aria-hidden="true" />
+                <span className="qr-corner qr-corner--br" aria-hidden="true" />
                 <QRScanner onScan={handleQRScan} onClose={() => setShowScanner(false)} />
               </div>
             </Card>
           )}
 
           {!isLoading && !showScanner && !scannedData && (
-            <Card className="p-8 sm:p-10 text-center animate-scale-in min-h-[360px] flex flex-col items-center justify-center">
-              <div className="w-16 h-16 rounded-full bg-[var(--color-qr-light)] flex items-center justify-center mx-auto mb-5">
+            <Card className="qr-empty-state p-8 sm:p-10 text-center min-h-[380px] flex flex-col items-center justify-center">
+              <div className="qr-empty-ring mb-5">
                 <Camera className="w-7 h-7 text-[var(--color-qr)]" aria-hidden="true" />
               </div>
               <h3 className="font-display text-lg font-semibold text-[var(--color-neutral-800)] mb-1.5">
@@ -165,15 +185,20 @@ const QRScan = () => {
           )}
 
           {!isLoading && scannedData && (
-            <Card className="p-6 sm:p-7 animate-scale-in">
-              <div className="flex items-center gap-2 mb-5">
-                <CheckCircle2 className="w-5 h-5 text-[var(--color-success)]" aria-hidden="true" />
+            <Card className="p-6 sm:p-7">
+              <div className="flex items-center gap-2.5 mb-1">
+                <span className="qr-result-badge">
+                  <CheckCircle2 className="w-4 h-4 text-[var(--color-success)]" aria-hidden="true" />
+                </span>
                 <h2 className="font-display text-lg font-semibold text-[var(--color-neutral-800)]">
                   Scanned Information
                 </h2>
               </div>
+              <p className="text-sm text-[var(--color-neutral-500)] mb-5 ml-[34px]">
+                Review the details below before issuing the certificate.
+              </p>
 
-              <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3 mb-7">
+              <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3 mb-6">
                 {Object.entries(scannedData.form_data || {}).map(([key, value]) => (
                   <div
                     key={key}
@@ -189,7 +214,7 @@ const QRScan = () => {
                 ))}
               </div>
 
-              <div className="flex flex-wrap gap-3 justify-end">
+              <div className="qr-result-actions flex flex-wrap gap-3 justify-end pt-5">
                 <Button variant="secondary" icon={RefreshCw} onClick={handleReset}>
                   Scan Another
                 </Button>
@@ -201,22 +226,22 @@ const QRScan = () => {
           )}
         </div>
 
-        <aside className="space-y-4">
+        <aside className="space-y-5">
           <Card className="p-5">
             <h2 className="font-display text-base font-semibold text-[var(--color-neutral-800)] mb-4">
               How it works
             </h2>
-            <div className="space-y-4">
+            <div className="qr-steps">
               {scanSteps.map((step, index) => {
                 const Icon = step.icon;
                 return (
-                  <div key={step.title} className="flex gap-3">
-                    <div className="w-9 h-9 rounded-[var(--radius-md)] bg-[var(--color-primary-light)] flex items-center justify-center shrink-0">
-                      <Icon className="w-4.5 h-4.5 text-[var(--color-primary)]" aria-hidden="true" />
+                  <div key={step.title} className="qr-step">
+                    <div className="qr-step-marker">
+                      <Icon className="w-4 h-4 text-[var(--color-primary)]" aria-hidden="true" />
                     </div>
-                    <div className="min-w-0">
+                    <div className="min-w-0 pb-1">
                       <p className="text-sm font-semibold text-[var(--color-neutral-800)]">
-                        {index + 1}. {step.title}
+                        {step.title}
                       </p>
                       <p className="text-sm text-[var(--color-neutral-500)] mt-0.5">
                         {step.description}
@@ -228,21 +253,14 @@ const QRScan = () => {
             </div>
           </Card>
 
-          <Card className="p-5 bg-[var(--color-voice-light)] border-[rgba(15,139,124,0.16)]">
-            <div className="flex gap-3">
-              <div className="w-9 h-9 rounded-[var(--radius-md)] bg-white/80 flex items-center justify-center shrink-0">
-                <ShieldCheck className="w-4.5 h-4.5 text-[var(--color-voice)]" aria-hidden="true" />
-              </div>
-              <div>
-                <h3 className="font-display text-sm font-semibold text-[var(--color-neutral-800)]">
-                  Secure and private
-                </h3>
-                <p className="text-sm text-[var(--color-neutral-600)] mt-1">
-                  QR data is used only to retrieve and populate the citizen's current CTC application.
-                </p>
-              </div>
-            </div>
-          </Card>
+          {/* Quieter than a full card — a reassurance footnote, not a competing block */}
+          <div className="qr-note">
+            <ShieldCheck className="w-4 h-4 text-[var(--color-voice)] shrink-0 mt-0.5" aria-hidden="true" />
+            <p>
+              <span className="font-semibold text-[var(--color-neutral-700)]">Secure and private —</span>{' '}
+              QR data is used only to retrieve and populate the citizen's current CTC application.
+            </p>
+          </div>
         </aside>
       </div>
     </div>

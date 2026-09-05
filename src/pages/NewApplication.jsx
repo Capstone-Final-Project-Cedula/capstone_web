@@ -487,6 +487,17 @@ const synthesizeAndPlay = async (text, { onStart, onEnd, audioRef } = {}) => {
     return;
   }
 
+  const stopCurrentAudio = () => {
+    window.speechSynthesis?.cancel();
+    if (audioRef?.current) {
+      audioRef.current.pause();
+      audioRef.current.src = '';
+      audioRef.current = null;
+    }
+  };
+
+  stopCurrentAudio();
+
   try {
     const response = await apiClient.post(
       '/speech/synthesize',
@@ -507,10 +518,14 @@ const synthesizeAndPlay = async (text, { onStart, onEnd, audioRef } = {}) => {
         resolve();
       };
       onStart?.(audio);
-      audio.play().catch(() => resolve());
+      audio.play().catch(() => {
+        window.URL.revokeObjectURL(url);
+        resolve();
+      });
     });
   } catch (error) {
     console.warn('Backend voice unavailable, using browser voice instead:', error);
+    stopCurrentAudio();
     if (window.speechSynthesis) {
       await new Promise((resolve) => {
         window.speechSynthesis.cancel();
@@ -716,11 +731,14 @@ const parseVoiceCorrections = (transcript) => {
 function useSpeechSynthesis() {
   const [isSpeaking, setIsSpeaking] = useState(false);
   const audioRef = useRef(null);
+  const speechSequenceRef = useRef(0);
 
   const cancel = useCallback(() => {
+    speechSequenceRef.current += 1;
     window.speechSynthesis?.cancel();
     if (audioRef.current) {
       audioRef.current.pause();
+      audioRef.current.src = '';
       audioRef.current = null;
     }
     setIsSpeaking(false);
@@ -728,10 +746,13 @@ function useSpeechSynthesis() {
 
   const speak = useCallback((text, onEnd) => {
     cancel();
+    const sequence = speechSequenceRef.current + 1;
+    speechSequenceRef.current = sequence;
     setIsSpeaking(true);
     synthesizeAndPlay(text, {
       audioRef,
       onEnd: () => {
+        if (speechSequenceRef.current !== sequence) return;
         setIsSpeaking(false);
         onEnd?.();
       },
@@ -1380,6 +1401,8 @@ const NewApplication = () => {
 
   // ── Core State ──
   const [step, setStep] = useState('interview');
+  // Manual entry is the safe default. Voice controls explicitly change this.
+  const [inputMethod, setInputMethod] = useState('manual');
   const [currentFieldIndex, setCurrentFieldIndex] = useState(0);
   const [answers, setAnswers] = useState({});
   const [draftAnswer, setDraftAnswer] = useState('');
@@ -1405,6 +1428,7 @@ const NewApplication = () => {
   const answersRef = useRef({});
   const inputRef = useRef(null);
   const speechAudioRef = useRef(null);
+  const speechSequenceRef = useRef(0);
 
   // ── Memoized Values ──
   const currentField = INTERVIEW_FIELDS[currentFieldIndex];
@@ -1435,6 +1459,7 @@ const NewApplication = () => {
   // ── Cleanup on unmount ──
   useEffect(() => {
     return () => {
+      speechSequenceRef.current += 1;
       window.speechSynthesis?.cancel();
       speechAudioRef.current?.pause();
       recognitionRef.current?.abort?.();
@@ -1451,10 +1476,19 @@ const NewApplication = () => {
   // Uses the same backend Edge neural TTS voice as the guided conversation,
   // with browser speechSynthesis as an automatic fallback.
   const speakText = useCallback((text, onEnd) => {
+    speechSequenceRef.current += 1;
+    const sequence = speechSequenceRef.current;
+    window.speechSynthesis?.cancel();
+    if (speechAudioRef.current) {
+      speechAudioRef.current.pause();
+      speechAudioRef.current.src = '';
+      speechAudioRef.current = null;
+    }
     setIsSpeaking(true);
     synthesizeAndPlay(text, {
       audioRef: speechAudioRef,
       onEnd: () => {
+        if (speechSequenceRef.current !== sequence) return;
         setIsSpeaking(false);
         onEnd?.();
       },
@@ -1682,7 +1716,7 @@ const NewApplication = () => {
 
       payload = {
         applicant_data: formData,
-        input_method: 'voice',
+        input_method: inputMethod,
         raw_transcript: null,
       };
 
@@ -1719,7 +1753,7 @@ const NewApplication = () => {
       setIsIssuing(false);
       setStatusMessage('Ready');
     }
-  }, [speakText]);
+  }, [speakText, inputMethod]);
 
   const printIssuedCtc = useCallback(async (numberToPrint) => {
     const printWindow = openPrintWindow();
@@ -1942,7 +1976,7 @@ const NewApplication = () => {
             <button onClick={playVerification} className="btn-secondary inline-flex items-center justify-center gap-2">
               {isSpeaking ? <FaPause /> : <FaPlay />} Read Back
             </button>
-            <button onClick={startVoiceReview} className="btn-secondary inline-flex items-center justify-center gap-2">
+            <button onClick={() => { setInputMethod('voice'); startVoiceReview(); }} className="btn-secondary inline-flex items-center justify-center gap-2">
               <FaMicrophone /> Voice Review
             </button>
           </div>
@@ -1954,7 +1988,10 @@ const NewApplication = () => {
               key={field.key}
               label={field.label}
               value={answers[field.key]}
-              onChange={(value) => updateReviewField(field.key, value)}
+              onChange={(value) => {
+                setInputMethod('manual');
+                updateReviewField(field.key, value);
+              }}
               onAskAgain={() => goToField(index)}
             />
           ))}
@@ -2061,7 +2098,10 @@ const NewApplication = () => {
                 <div className="mt-3 flex flex-wrap items-center gap-2">
                   {!isConversationActive ? (
                     <button
-                      onClick={startConversation}
+                      onClick={() => {
+                        setInputMethod('voice');
+                        startConversation();
+                      }}
                       disabled={isTranscribing}
                       className="btn-primary inline-flex items-center gap-2 disabled:opacity-50"
                     >
@@ -2088,7 +2128,10 @@ const NewApplication = () => {
               id="answer-input"
               ref={inputRef}
               value={draftAnswer}
-              onChange={(e) => setDraftAnswer(e.target.value)}
+              onChange={(e) => {
+                setInputMethod('manual');
+                setDraftAnswer(e.target.value);
+              }}
               rows={4}
               placeholder={currentField.hint}
               className="input-field resize-none text-base w-full"
@@ -2101,7 +2144,10 @@ const NewApplication = () => {
               <div className="flex flex-wrap items-center gap-2">
                 {!isRecording && !isBrowserListening ? (
                   <button
-                    onClick={startVoiceAnswer}
+                    onClick={() => {
+                      setInputMethod('voice');
+                      startVoiceAnswer();
+                    }}
                     disabled={isTranscribing || isConversationActive}
                     className="btn-danger inline-flex items-center gap-2 disabled:opacity-50"
                     aria-label="Answer by voice"

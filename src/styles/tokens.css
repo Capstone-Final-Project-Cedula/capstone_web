@@ -3,7 +3,7 @@
   --------------------------------------------------------------
   A civic document system with two intake modes: voice-guided
   kiosk and QR handoff from the citizen's phone. The palette
-  keeps an official, trustworthy "seal" blue as the primary,
+  keeps an official, trustworthy pine-green as the primary,
   and gives each intake mode its own quiet accent (teal for
   voice, amber for QR) so mode is always readable at a glance
   without relying on emoji.
@@ -16,51 +16,51 @@
 
 :root {
   /* ---------- Color: brand ---------- */
-  --color-primary: #3B4BC4;       /* seal blue — primary actions, brand */
-  --color-primary-hover: #2F3BA3;
-  --color-primary-active: #262F84;
-  --color-primary-light: #EDEFFC;
-  --color-primary-ring: rgba(59, 75, 196, 0.18);
+  --color-primary: #123832;       /* deep pine green — primary actions, brand */
+  --color-primary-hover: #0B2622;
+  --color-primary-active: #081C19;
+  --color-primary-light: #E6EEEA;
+  --color-primary-ring: rgba(18, 56, 50, 0.18);
 
   /* ---------- Color: intake modes ---------- */
-  --color-voice: #0F8B7C;         /* teal — voice-processed */
-  --color-voice-light: #E7F6F3;
-  --color-qr: #B5670A;            /* amber — QR-processed */
-  --color-qr-light: #FCF1E1;
+  --color-voice: #0F7A6E;         /* teal — voice-processed */
+  --color-voice-light: #E5F1EE;
+  --color-qr: #A8721E;            /* muted gold — QR-processed */
+  --color-qr-light: #F5EEE0;
 
   /* ---------- Color: semantic ---------- */
-  --color-success: #0E8F5C;
-  --color-success-light: #E6F6EE;
-  --color-warning: #B5670A;
-  --color-warning-light: #FCF1E1;
-  --color-error: #D0342C;
-  --color-error-light: #FBEAE9;
-  --color-info: #1D6FB8;
-  --color-info-light: #EAF3FB;
+  --color-success: #1F7A5C;
+  --color-success-light: #E3F1EA;
+  --color-warning: #A8721E;
+  --color-warning-light: #F5EEE0;
+  --color-error: #C1443B;
+  --color-error-light: #FBE7E7;
+  --color-info: #5B6B73;
+  --color-info-light: #EDF0F1;
 
   /* ---------- Color: app shell (sidebar) ---------- */
-  --color-shell-bg: #1B2154;          /* deep navy-indigo, distinct from primary */
-  --color-shell-bg-raised: #242C68;
-  --color-shell-border: rgba(255, 255, 255, 0.08);
-  --color-shell-text: rgba(255, 255, 255, 0.68);
+  --color-shell-bg: #FFFFFF;          /* light sidebar, matching reference */
+  --color-shell-bg-raised: #F6F6F4;
+  --color-shell-border: rgba(18, 56, 50, 0.08);
+  --color-shell-text: #7A808C;
   --color-shell-text-active: #FFFFFF;
-  --color-shell-item-hover: rgba(255, 255, 255, 0.06);
-  --color-shell-item-active: rgba(255, 255, 255, 0.12);
-  --color-shell-accent: #7C89F0;      /* lighter tint of primary, for active rail */
+  --color-shell-item-hover: rgba(18, 56, 50, 0.05);
+  --color-shell-item-active: var(--color-primary);
+  --color-shell-accent: #4C7A70;      /* lighter tint of primary, for active rail */
 
-  /* ---------- Color: neutrals (slate, slightly warm) ---------- */
+  /* ---------- Color: neutrals (warm, off-white) ---------- */
   --color-neutral-0: #FFFFFF;
-  --color-neutral-25: #FBFBFC;
-  --color-neutral-50: #F6F7F9;
-  --color-neutral-100: #EEF0F3;
-  --color-neutral-200: #E2E5EA;
-  --color-neutral-300: #CBD0D9;
-  --color-neutral-400: #9BA3B2;
-  --color-neutral-500: #6B7386;
-  --color-neutral-600: #4C5366;
-  --color-neutral-700: #363C4D;
-  --color-neutral-800: #22262F;
-  --color-neutral-900: #14161C;
+  --color-neutral-25: #FBFBFA;
+  --color-neutral-50: #F6F6F4;
+  --color-neutral-100: #ECEDEA;
+  --color-neutral-200: #DDE1DE;
+  --color-neutral-300: #C6CBC6;
+  --color-neutral-400: #9AA0A0;
+  --color-neutral-500: #7A808C;
+  --color-neutral-600: #565B66;
+  --color-neutral-700: #383D45;
+  --color-neutral-800: #22252B;
+  --color-neutral-900: #16181C;
 
   /* ---------- Type ---------- */
   --font-display: 'Plus Jakarta Sans', system-ui, sans-serif;
@@ -74,11 +74,11 @@
   --radius-xl: 20px;
   --radius-pill: 999px;
 
-  /* ---------- Shadow (soft, low-contrast) ---------- */
-  --shadow-xs: 0 1px 2px rgba(20, 22, 28, 0.04);
-  --shadow-sm: 0 2px 6px rgba(20, 22, 28, 0.05), 0 1px 2px rgba(20, 22, 28, 0.04);
-  --shadow-md: 0 8px 20px rgba(20, 22, 28, 0.07), 0 2px 6px rgba(20, 22, 28, 0.04);
-  --shadow-lg: 0 20px 40px rgba(20, 22, 28, 0.10), 0 4px 10px rgba(20, 22, 28, 0.05);
+  /* ---------- Shadow (soft, pine-tinted) ---------- */
+  --shadow-xs: 0 1px 2px rgba(18, 56, 50, 0.04);
+  --shadow-sm: 0 2px 6px rgba(18, 56, 50, 0.05), 0 1px 2px rgba(18, 56, 50, 0.04);
+  --shadow-md: 0 8px 20px rgba(18, 56, 50, 0.07), 0 2px 6px rgba(18, 56, 50, 0.04);
+  --shadow-lg: 0 20px 40px rgba(18, 56, 50, 0.10), 0 4px 10px rgba(18, 56, 50, 0.05);
   --shadow-focus: 0 0 0 4px var(--color-primary-ring);
 
   /* ---------- Motion ---------- */

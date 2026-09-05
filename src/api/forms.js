@@ -23,6 +23,8 @@ export const formsAPI = {
   getRecords: (params) => apiClient.get('/forms/records', { params }),
   
   getRecord: (id) => apiClient.get(`/forms/records/${id}`),
+
+  deleteRecord: (id) => apiClient.delete(`/forms/records/${id}`),
   
   getStats: () => apiClient.get('/forms/dashboard/stats'),
 };

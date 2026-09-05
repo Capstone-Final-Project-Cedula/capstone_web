@@ -2,7 +2,8 @@ import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { formsAPI } from '../api/forms';
 import { toast } from 'react-toastify';
-import { Search, Plus, X, Download, FileSearch, Mic, QrCode } from 'lucide-react';
+import { Search, Plus, X, Download, FileSearch, Mic, QrCode, Trash2, ChevronLeft, ChevronRight } from 'lucide-react';
+import { useAuth } from '../contexts/AuthContext';
 import Card from '../components/ui/Card';
 import Button from '../components/ui/Button';
 import Badge from '../components/ui/Badge';
@@ -14,21 +15,52 @@ const Records = () => {
   const [loading, setLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState('');
   const [filter, setFilter] = useState('all');
+  const [page, setPage] = useState(1);
+  const [totalRecords, setTotalRecords] = useState(0);
+  const [deletingId, setDeletingId] = useState(null);
   const navigate = useNavigate();
+  const { isAdmin } = useAuth();
+  const pageSize = 10;
+  const totalPages = Math.max(1, Math.ceil(totalRecords / pageSize));
+  const visiblePages = Array.from(
+    new Set([1, totalPages, ...Array.from({ length: 5 }, (_, i) => page - 2 + i)
+      .filter((number) => number >= 1 && number <= totalPages)])
+  ).sort((a, b) => a - b);
 
   useEffect(() => {
     fetchRecords();
-  }, []);
+  }, [page, searchTerm, filter]);
 
   const fetchRecords = async () => {
     try {
-      const response = await formsAPI.getRecords();
+      const response = await formsAPI.getRecords({
+        skip: (page - 1) * pageSize,
+        limit: pageSize,
+        search: searchTerm || undefined,
+        input_method: filter === 'all' ? undefined : filter,
+      });
       setRecords(response.data);
+      setTotalRecords(Number(response.headers['x-total-count'] || 0));
     } catch (error) {
       console.error('Error fetching records:', error);
       toast.error('Error loading records');
     } finally {
       setLoading(false);
+    }
+  };
+
+  const handleDelete = async (record) => {
+    if (!window.confirm(`Delete CTC ${record.ctc_number}? This cannot be undone.`)) return;
+    setDeletingId(record.id);
+    try {
+      await formsAPI.deleteRecord(record.id);
+      toast.success(`CTC ${record.ctc_number} deleted.`);
+      if (records.length === 1 && page > 1) setPage(page - 1);
+      else fetchRecords();
+    } catch (error) {
+      toast.error(error.response?.data?.detail || 'Unable to delete this record.');
+    } finally {
+      setDeletingId(null);
     }
   };
 
@@ -51,24 +83,6 @@ const Records = () => {
       toast.error('Error downloading file');
     }
   };
-
-  const filteredRecords = records.filter((record) => {
-    const searchMatch =
-      record.ctc_number?.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      record.applicant?.surname?.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      record.applicant?.given_name?.toLowerCase().includes(searchTerm.toLowerCase());
-
-    if (filter === 'voice') {
-      return searchMatch && record.input_method === 'voice';
-    }
-    if (filter === 'qr') {
-      return searchMatch && record.input_method === 'qr';
-    }
-    if (filter === 'manual') {
-      return searchMatch && record.input_method === 'manual';
-    }
-    return searchMatch;
-  });
 
   const hasActiveFilters = searchTerm !== '' || filter !== 'all';
 
@@ -93,13 +107,13 @@ const Records = () => {
               type="text"
               placeholder="Search by name or CTC number…"
               value={searchTerm}
-              onChange={(e) => setSearchTerm(e.target.value)}
+              onChange={(e) => { setSearchTerm(e.target.value); setPage(1); }}
               className="focusable w-full h-10 pl-10 pr-3.5 border border-[var(--color-neutral-200)] rounded-[var(--radius-md)] text-sm outline-none transition-all duration-150 focus:border-[var(--color-primary)] focus:shadow-[var(--shadow-focus)]"
             />
           </div>
           <select
             value={filter}
-            onChange={(e) => setFilter(e.target.value)}
+            onChange={(e) => { setFilter(e.target.value); setPage(1); }}
             className="focusable h-10 px-3.5 border border-[var(--color-neutral-200)] rounded-[var(--radius-md)] text-sm bg-white outline-none transition-all duration-150 focus:border-[var(--color-primary)] focus:shadow-[var(--shadow-focus)]"
           >
             <option value="all">All Records</option>
@@ -115,6 +129,7 @@ const Records = () => {
               onClick={() => {
                 setSearchTerm('');
                 setFilter('all');
+                setPage(1);
               }}
             >
               Clear
@@ -149,7 +164,7 @@ const Records = () => {
             <tbody className="divide-y divide-[var(--color-neutral-100)]">
               {loading ? (
                 Array.from({ length: 5 }).map((_, i) => <SkeletonTableRow key={i} columns={5} />)
-              ) : filteredRecords.length === 0 ? (
+              ) : records.length === 0 ? (
                 <tr>
                   <td colSpan="5">
                     <EmptyState
@@ -164,7 +179,7 @@ const Records = () => {
                   </td>
                 </tr>
               ) : (
-                filteredRecords.map((record) => (
+                records.map((record) => (
                   <tr key={record.id} className="hover:bg-[var(--color-neutral-50)] transition-colors duration-150">
                     <td className="px-6 py-4 font-mono-data font-semibold text-[var(--color-primary)]">
                       {record.ctc_number}
@@ -192,6 +207,16 @@ const Records = () => {
                         <Download className="w-3.5 h-3.5" aria-hidden="true" />
                         Download
                       </button>
+                      {isAdmin && (
+                        <button
+                          onClick={() => handleDelete(record)}
+                          disabled={deletingId === record.id}
+                          className="focusable ml-4 inline-flex items-center gap-1.5 text-[var(--color-negative-text)] hover:opacity-80 font-medium rounded-[var(--radius-sm)] transition-colors disabled:opacity-50"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" aria-hidden="true" />
+                          {deletingId === record.id ? 'Deleting...' : 'Delete'}
+                        </button>
+                      )}
                     </td>
                   </tr>
                 ))
@@ -200,6 +225,32 @@ const Records = () => {
           </table>
         </div>
       </Card>
+
+      {totalRecords > 0 && (
+        <div className="mt-5 flex flex-wrap items-center justify-between gap-3">
+          <p className="text-sm text-[var(--color-neutral-500)]">
+            Showing {(page - 1) * pageSize + 1}–{Math.min(page * pageSize, totalRecords)} of {totalRecords} records
+          </p>
+          <div className="flex items-center gap-1">
+            <Button variant="ghost" size="sm" icon={ChevronLeft} disabled={page === 1} onClick={() => setPage(page - 1)}>Previous</Button>
+            {visiblePages.map((number, index) => (
+              <React.Fragment key={number}>
+                {index > 0 && number - visiblePages[index - 1] > 1 && (
+                  <span className="px-1 text-[var(--color-neutral-400)]" aria-hidden="true">…</span>
+                )}
+                <button
+                  onClick={() => setPage(number)}
+                  className={`focusable min-w-9 h-9 rounded-[var(--radius-md)] text-sm font-medium ${page === number ? 'bg-[var(--color-primary)] text-white' : 'text-[var(--color-neutral-600)] hover:bg-[var(--color-neutral-100)]'}`}
+                  aria-current={page === number ? 'page' : undefined}
+                >
+                  {number}
+                </button>
+              </React.Fragment>
+            ))}
+            <Button variant="ghost" size="sm" icon={ChevronRight} disabled={page === totalPages} onClick={() => setPage(page + 1)}>Next</Button>
+          </div>
+        </div>
+      )}
     </div>
   );
 };
