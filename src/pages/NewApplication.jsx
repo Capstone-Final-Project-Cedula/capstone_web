@@ -16,6 +16,7 @@ import {
   FaExclamationTriangle,
   FaBrain,
   FaCommentDots,
+  FaFileAlt,
 } from 'react-icons/fa';
 import { speechAPI } from '../api/speech';
 import { extractionAPI } from '../api/extraction';
@@ -2028,16 +2029,21 @@ const NewApplication = () => {
       <div className="space-y-5">
         {/* Header */}
         <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
-          <div>
-            <h1 className="text-2xl font-bold text-gray-900">New Cedula Application</h1>
-            <p className="mt-1 text-sm text-gray-600 inline-flex items-center gap-2">
-              Question {currentFieldIndex + 1} of {INTERVIEW_FIELDS.length}
-              <span className="text-gray-300">•</span>
-              <span className="inline-flex items-center gap-1 text-gray-500">
-                <span aria-hidden="true">{currentPhaseCopy.icon}</span> {currentPhaseCopy.label}
-              </span>
-            </p>
-          </div>
+            <div>
+              <h1 className="text-2xl font-bold text-gray-900 flex items-center gap-2.5">
+                <span className="w-9 h-9 rounded-[var(--radius-md)] bg-[var(--color-primary-light)] flex items-center justify-center">
+                  <FaFileAlt className="w-4.5 h-4.5 text-[var(--color-primary)]" aria-hidden="true" />
+                </span>
+                New Cedula Application
+              </h1>
+              <p className="mt-1 text-sm text-gray-600 inline-flex items-center gap-2">
+                Question {currentFieldIndex + 1} of {INTERVIEW_FIELDS.length}
+                <span className="text-gray-300">•</span>
+                <span className="inline-flex items-center gap-1 text-gray-500">
+                  <span aria-hidden="true">{currentPhaseCopy.icon}</span> {currentPhaseCopy.label}
+                </span>
+              </p>
+            </div>
           <div className="min-w-48">
             <div className="mb-1 flex justify-between text-xs font-medium text-gray-600">
               <span>Completed</span>

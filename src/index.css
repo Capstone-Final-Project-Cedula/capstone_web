@@ -656,3 +656,20 @@ body {
   line-height: 1.5;
   color: var(--color-neutral-500);
 }
+
+.btn-primary:hover {
+  background-color: var(--color-primary-hover);
+}
+
+.btn-danger {
+  background-color: var(--color-error);   /* was --color-negative-text */
+  color: white;
+  padding: 0.5rem 1rem;
+  border-radius: 0.5rem;
+  transition: background-color 0.2s;
+  border: none;
+  cursor: pointer;
+}
+.btn-danger:hover {
+  background-color: #A5362E; /* this one's fine, it's a literal hex */
+}

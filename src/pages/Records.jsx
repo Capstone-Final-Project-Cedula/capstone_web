@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { formsAPI } from '../api/forms';
 import { toast } from 'react-toastify';
-import { Search, Plus, X, Download, FileSearch, Mic, QrCode, Trash2, ChevronLeft, ChevronRight } from 'lucide-react';
+import { Search, Plus, X, Download, FileSearch, Mic, QrCode, Trash2, ChevronLeft, ChevronRight, FileText } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
 import Card from '../components/ui/Card';
 import Button from '../components/ui/Button';
@@ -90,7 +90,12 @@ const Records = () => {
     <div className="animate-fade-in">
       <div className="flex flex-col sm:flex-row sm:justify-between sm:items-center gap-4 mb-6">
         <div>
-          <h1 className="font-display text-2xl font-bold text-[var(--color-neutral-900)]">Records</h1>
+          <h1 className="font-display text-2xl font-bold text-[var(--color-neutral-900)] flex items-center gap-2.5">
+            <span className="w-9 h-9 rounded-[var(--radius-md)] bg-[var(--color-primary-light)] flex items-center justify-center">
+              <FileText className="w-4.5 h-4.5 text-[var(--color-primary)]" aria-hidden="true" />
+            </span>
+            Records
+          </h1>
           <p className="text-[var(--color-neutral-500)] mt-1">View and manage all issued CTCs.</p>
         </div>
         <Button icon={Plus} onClick={() => navigate('/new-application')}>
@@ -211,7 +216,7 @@ const Records = () => {
                         <button
                           onClick={() => handleDelete(record)}
                           disabled={deletingId === record.id}
-                          className="focusable ml-4 inline-flex items-center gap-1.5 text-[var(--color-negative-text)] hover:opacity-80 font-medium rounded-[var(--radius-sm)] transition-colors disabled:opacity-50"
+                          className="focusable ml-4 inline-flex items-center gap-1.5 text-[var(--color-error)] hover:opacity-80 font-medium rounded-[var(--radius-sm)] transition-colors disabled:opacity-50"
                         >
                           <Trash2 className="w-3.5 h-3.5" aria-hidden="true" />
                           {deletingId === record.id ? 'Deleting...' : 'Delete'}
