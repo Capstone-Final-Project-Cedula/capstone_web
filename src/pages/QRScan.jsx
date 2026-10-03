@@ -18,11 +18,13 @@ import { formsAPI } from '../api/forms';
 import { getApiErrorMessage } from '../api/errors';
 import Card from '../components/ui/Card';
 import Button from '../components/ui/Button';
+import SusSurveyDialog from '../components/sus/SusSurveyDialog';
 
 const QRScan = () => {
   const [isLoading, setIsLoading] = useState(false);
   const [scannedData, setScannedData] = useState(null);
   const [showScanner, setShowScanner] = useState(false);
+  const [surveyTransactionId, setSurveyTransactionId] = useState(null);
   const navigate = useNavigate();
 
   const handleQRScan = async (decodedText) => {
@@ -66,7 +68,8 @@ const QRScan = () => {
       document.body.removeChild(link);
       window.URL.revokeObjectURL(url);
 
-      navigate('/records');
+      // Offer the usability survey; closing it continues to Records.
+      setSurveyTransactionId(result.data.id);
     } catch (error) {
       console.error('Error issuing form:', error);
       toast.error('Error issuing CTC. Please try again.');
@@ -264,6 +267,15 @@ const QRScan = () => {
           </div>
         </aside>
       </div>
+      <SusSurveyDialog
+        open={Boolean(surveyTransactionId)}
+        transactionId={surveyTransactionId}
+        defaultFeatures={['qr_prefill', 'form_generation']}
+        onClose={() => {
+          setSurveyTransactionId(null);
+          navigate('/records');
+        }}
+      />
     </div>
   );
 };

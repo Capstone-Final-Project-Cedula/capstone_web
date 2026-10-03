@@ -11,6 +11,7 @@ import QRScan from './pages/QRScan';
 import Records from './pages/Records';
 import StaffManagement from './pages/StaffManagement';
 import Settings from './pages/Settings';
+import SusSurveyPage from './pages/SusSurveyPage';
 import LoadingSpinner from './components/common/LoadingSpinner';
 
 const ProtectedRoute = ({ children, adminOnly = false }) => {
@@ -30,6 +31,8 @@ const AppRoutes = () => {
   return (
     <Routes>
       <Route path="/login" element={<Login />} />
+      {/* Public usability survey, e.g. opened from a printed QR code */}
+      <Route path="/sus" element={<SusSurveyPage />} />
       <Route path="/" element={<ProtectedRoute><Layout /></ProtectedRoute>}>
         <Route index element={<Navigate to="/new-application" replace />} />
         <Route path="dashboard" element={<ProtectedRoute adminOnly><Dashboard /></ProtectedRoute>} />

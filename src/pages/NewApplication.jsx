@@ -24,6 +24,7 @@ import { formsAPI } from '../api/forms';
 import apiClient from '../api/client';
 import { getApiErrorMessage } from '../api/errors';
 import LoadingSpinner from '../components/common/LoadingSpinner';
+import SusSurveyDialog from '../components/sus/SusSurveyDialog';
 
 // ═══════════════════════════════════════════════════════════════
 // SECTION 1: Constants & Configuration
@@ -1344,6 +1345,8 @@ const NewApplication = () => {
   const [answers, setAnswers] = useState({});
   const [draftAnswer, setDraftAnswer] = useState('');
   const [ctcNumber, setCtcNumber] = useState('');
+  // Usability survey offered after the CTC is issued
+  const [survey, setSurvey] = useState({ open: false, transactionId: null, features: [] });
   const [awaitingConfirmation, setAwaitingConfirmation] = useState(false);
   const [statusMessage, setStatusMessage] = useState('Ready');
   const [phase, setPhase] = useState(PHASE.IDLE);
@@ -1670,6 +1673,13 @@ const NewApplication = () => {
       downloadAndPrintPdf(pdfResponse.data, issuedCtc, printWindow);
 
       toast.success(`CTC ${issuedCtc} issued successfully.`);
+      setSurvey({
+        open: true,
+        transactionId: result.data?.id ?? null,
+        features: inputMethod === 'voice'
+          ? ['voice_input', 'voice_feedback', 'form_generation']
+          : ['form_generation'],
+      });
       setStep('success');
       setPhase(PHASE.IDLE);
       speakText('Your Community Tax Certificate has been issued and downloaded. Thank you, and have a good day.');
@@ -1716,6 +1726,7 @@ const NewApplication = () => {
     setAnswers({});
     setDraftAnswer('');
     setCtcNumber('');
+    setSurvey({ open: false, transactionId: null, features: [] });
     setAwaitingConfirmation(false);
     setChatHistory([]);
     setStatusMessage('Ready');
@@ -1798,6 +1809,12 @@ const NewApplication = () => {
             </button>
           </div>
         </div>
+        <SusSurveyDialog
+          open={survey.open}
+          transactionId={survey.transactionId}
+          defaultFeatures={survey.features}
+          onClose={() => setSurvey((s) => ({ ...s, open: false }))}
+        />
       </div>
     );
   }

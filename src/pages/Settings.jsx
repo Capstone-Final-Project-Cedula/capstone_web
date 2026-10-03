@@ -1,11 +1,12 @@
 import React, { useEffect, useState } from 'react';
 import { toast } from 'react-toastify';
-import { Settings as SettingsIcon, Save, Landmark, SlidersHorizontal, Info } from 'lucide-react';
+import { Settings as SettingsIcon, Save, Landmark, SlidersHorizontal, Info, ClipboardList, RefreshCw } from 'lucide-react';
 import Card, { CardBody } from '../components/ui/Card';
 import Input from '../components/ui/Input';
 import Button from '../components/ui/Button';
 import { settingsAPI, SETTINGS_UPDATED_EVENT } from '../api/settings';
 import { getApiErrorMessage } from '../api/errors';
+import { susAPI } from '../api/sus';
 
 const EMPTY = {
   barangay_name: '',
@@ -19,6 +20,8 @@ const Settings = () => {
   const [settings, setSettings] = useState(EMPTY);
   const [isLoading, setIsLoading] = useState(false);
   const [isFetching, setIsFetching] = useState(true);
+  const [susSummary, setSusSummary] = useState(null);
+  const [isResyncing, setIsResyncing] = useState(false);
 
   useEffect(() => {
     settingsAPI.get()
@@ -26,6 +29,29 @@ const Settings = () => {
       .catch((error) => toast.error(getApiErrorMessage(error, 'Could not load settings')))
       .finally(() => setIsFetching(false));
   }, []);
+
+  const loadSusSummary = () =>
+    susAPI.summary()
+      .then((res) => setSusSummary(res.data))
+      .catch(() => setSusSummary(null));
+
+  useEffect(() => {
+    loadSusSummary();
+  }, []);
+
+  const handleResync = async () => {
+    setIsResyncing(true);
+    try {
+      const res = await susAPI.resync();
+      toast.success(res.data.message);
+      // The sheet usually confirms within a few seconds.
+      setTimeout(loadSusSummary, 8000);
+    } catch (error) {
+      toast.error(getApiErrorMessage(error, 'Could not start the resync'));
+    } finally {
+      setIsResyncing(false);
+    }
+  };
 
   const handleChange = (e) => {
     const { name, value } = e.target;
@@ -196,6 +222,44 @@ const Settings = () => {
                   </span>
                 </div>
               </div>
+            </Card>
+
+            <Card className="p-5">
+              <h2 className="font-display text-base font-semibold text-[var(--color-neutral-800)] mb-1 flex items-center gap-2">
+                <ClipboardList className="w-4.5 h-4.5 text-[var(--color-primary)]" aria-hidden="true" />
+                Usability survey (SUS)
+              </h2>
+              <p className="text-sm text-[var(--color-neutral-500)] mb-4">
+                Responses are copied to the Google Sheet automatically.
+              </p>
+              <div className="space-y-3">
+                <div className="flex justify-between gap-4 text-sm">
+                  <span className="text-[var(--color-neutral-500)]">Responses</span>
+                  <span className="font-semibold text-[var(--color-neutral-800)]">{susSummary?.total ?? '—'}</span>
+                </div>
+                <div className="flex justify-between gap-4 text-sm">
+                  <span className="text-[var(--color-neutral-500)]">Waiting to reach the sheet</span>
+                  <span className={`font-semibold ${susSummary?.pending_sync ? 'text-[var(--color-warning)]' : 'text-[var(--color-neutral-800)]'}`}>
+                    {susSummary?.pending_sync ?? '—'}
+                  </span>
+                </div>
+                <div className="flex justify-between gap-4 text-sm">
+                  <span className="text-[var(--color-neutral-500)]">Survey link (for a QR code)</span>
+                  <a href="/sus" target="_blank" rel="noreferrer" className="font-semibold text-[var(--color-primary)] text-right break-all">
+                    {window.location.origin}/sus
+                  </a>
+                </div>
+              </div>
+              <Button
+                variant="secondary"
+                icon={RefreshCw}
+                loading={isResyncing}
+                disabled={isResyncing}
+                onClick={handleResync}
+                className="w-full mt-4"
+              >
+                Resync to Google Sheets
+              </Button>
             </Card>
 
             <Card className="p-5 bg-[var(--color-primary-light)] border-[rgba(59,75,196,0.16)]">
