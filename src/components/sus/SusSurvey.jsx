@@ -158,7 +158,7 @@ const SusSurvey = ({ platform = 'web', transactionId = null, defaultFeatures = [
             onClick={() => setConsent(!consent)}
             label="I agree to answer this survey"
           />
-          <div className="flex flex-wrap gap-3 justify-between">
+          <div className="flex gap-3 justify-between [&>*:last-child]:flex-1 sm:[&>*:last-child]:flex-none">
             <Button variant="secondary" size="lg" className="h-14 px-6 text-base" onClick={onClose}>No, thanks</Button>
             <Button size="lg" className="h-14 px-8 text-base" icon={ArrowRight} iconPosition="right"
               disabled={!consent} onClick={() => goTo('profile')}>
@@ -211,7 +211,7 @@ const SusSurvey = ({ platform = 'web', transactionId = null, defaultFeatures = [
             </div>
           </div>
 
-          <div className="flex flex-wrap gap-3 justify-between">
+          <div className="flex gap-3 justify-between [&>*:last-child]:flex-1 sm:[&>*:last-child]:flex-none">
             <Button variant="secondary" size="lg" className="h-14 px-6 text-base" icon={ArrowLeft} onClick={() => goTo('consent')}>Back</Button>
             <Button size="lg" className="h-14 px-8 text-base" icon={ArrowRight} iconPosition="right" onClick={nextFromProfile}>Next</Button>
           </div>
@@ -225,9 +225,18 @@ const SusSurvey = ({ platform = 'web', transactionId = null, defaultFeatures = [
             <p className="mt-2 text-base text-[var(--color-neutral-600)]">
               For each sentence, tap a number from <strong>1 (Strongly disagree)</strong> to <strong>5 (Strongly agree)</strong>.
             </p>
-            <p className="mt-1 text-sm text-[var(--color-neutral-500)]">
-              {SUS_STATEMENTS.length - missingStatements.length} of {SUS_STATEMENTS.length} answered
-            </p>
+          </div>
+          <div className="sticky top-0 z-10 -mx-1 px-1 py-2 bg-white/95 backdrop-blur border-b border-[var(--color-neutral-100)]">
+            <div className="flex justify-between text-sm font-semibold text-[var(--color-neutral-700)] mb-1.5">
+              <span>{SUS_STATEMENTS.length - missingStatements.length} of {SUS_STATEMENTS.length} answered</span>
+              {missingStatements.length === 0 && <span className="text-[var(--color-success)]">All done</span>}
+            </div>
+            <div className="h-2 rounded-full bg-[var(--color-neutral-100)] overflow-hidden">
+              <div
+                className="h-full bg-[var(--color-success)] transition-all"
+                style={{ width: `${((SUS_STATEMENTS.length - missingStatements.length) / SUS_STATEMENTS.length) * 100}%` }}
+              />
+            </div>
           </div>
 
           {SUS_STATEMENTS.map((statement, index) => {
@@ -239,14 +248,14 @@ const SusSurvey = ({ platform = 'web', transactionId = null, defaultFeatures = [
                 ref={(el) => { statementRefs.current[index] = el; }}
                 className={[
                   'rounded-[var(--radius-lg)] border-2 p-4 sm:p-5',
-                  missing ? 'border-[var(--color-error)] bg-[var(--color-error-light)]' : 'border-[var(--color-neutral-200)] bg-white',
+                  missing ? 'border-[var(--color-error)] bg-white' : 'border-[var(--color-neutral-200)] bg-white',
                 ].join(' ')}
               >
                 <legend className="sr-only">Statement {q}</legend>
                 <p className="text-lg font-medium text-[var(--color-neutral-900)] mb-4">
                   <span className="text-[var(--color-primary)] font-bold mr-1.5">{q}.</span>{statement}
                 </p>
-                <div className="grid grid-cols-5 gap-2" role="radiogroup" aria-label={`Statement ${q}`}>
+                <div className="grid grid-cols-5 gap-2 sm:gap-3" role="radiogroup" aria-label={`Statement ${q}`}>
                   {SUS_SCALE.map((option) => {
                     const selected = answers[q] === option.value;
                     return (
@@ -258,20 +267,26 @@ const SusSurvey = ({ platform = 'web', transactionId = null, defaultFeatures = [
                         aria-label={`${option.value} — ${option.label}`}
                         onClick={() => setAnswers((a) => ({ ...a, [q]: option.value }))}
                         className={[
-                          'focusable min-h-[64px] rounded-[var(--radius-md)] border-2 flex flex-col items-center justify-center px-1 py-2 transition-colors',
+                          'focusable h-14 sm:h-16 rounded-[var(--radius-md)] border-2 text-2xl font-bold transition-colors',
                           selected
                             ? 'border-[var(--color-primary)] bg-[var(--color-primary)] text-white'
                             : 'border-[var(--color-neutral-200)] bg-white text-[var(--color-neutral-800)] hover:border-[var(--color-primary)]',
                         ].join(' ')}
                       >
-                        <span className="text-xl font-bold leading-none">{option.value}</span>
-                        <span className={`mt-1 text-[11px] sm:text-xs leading-tight text-center ${selected ? 'text-white' : 'text-[var(--color-neutral-500)]'}`}>
-                          {option.label}
-                        </span>
+                        {option.value}
                       </button>
                     );
                   })}
                 </div>
+                <div className="mt-2 flex justify-between gap-2 text-xs sm:text-sm text-[var(--color-neutral-500)]">
+                  <span>1 = Strongly disagree</span>
+                  <span className="text-right">5 = Strongly agree</span>
+                </div>
+                {answers[q] && (
+                  <p className="mt-1 text-center text-sm font-semibold text-[var(--color-primary)]">
+                    {SUS_SCALE[answers[q] - 1].label}
+                  </p>
+                )}
                 {missing && <p className="mt-2 text-sm font-medium text-[var(--color-error)]">Please answer this one.</p>}
               </fieldset>
             );
@@ -282,7 +297,7 @@ const SusSurvey = ({ platform = 'web', transactionId = null, defaultFeatures = [
               Please answer all 10 sentences ({missingStatements.length} left).
             </p>
           )}
-          <div className="flex flex-wrap gap-3 justify-between">
+          <div className="flex gap-3 justify-between [&>*:last-child]:flex-1 sm:[&>*:last-child]:flex-none">
             <Button variant="secondary" size="lg" className="h-14 px-6 text-base" icon={ArrowLeft} onClick={() => goTo('profile')}>Back</Button>
             <Button size="lg" className="h-14 px-8 text-base" icon={ArrowRight} iconPosition="right" onClick={nextFromStatements}>Next</Button>
           </div>
@@ -304,7 +319,7 @@ const SusSurvey = ({ platform = 'web', transactionId = null, defaultFeatures = [
             className="focusable w-full rounded-[var(--radius-md)] border-2 border-[var(--color-neutral-200)] p-4 text-base"
           />
           {error && <p className="text-base font-medium text-[var(--color-error)]" role="alert">{error}</p>}
-          <div className="flex flex-wrap gap-3 justify-between">
+          <div className="flex gap-3 justify-between [&>*:last-child]:flex-1 sm:[&>*:last-child]:flex-none">
             <Button variant="secondary" size="lg" className="h-14 px-6 text-base" icon={ArrowLeft}
               disabled={submitting} onClick={() => goTo('statements')}>
               Back
