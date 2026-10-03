@@ -1,4 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { ClipboardList, X } from 'lucide-react';
 import Card from '../ui/Card';
 import Button from '../ui/Button';
@@ -18,14 +19,22 @@ const SusSurveyDialog = ({ open, onClose, transactionId = null, defaultFeatures 
     setStarted(false);
     const onKey = (e) => e.key === 'Escape' && onCloseRef.current();
     window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
+    // Keep the page behind the dialog from scrolling.
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    return () => {
+      window.removeEventListener('keydown', onKey);
+      document.body.style.overflow = previousOverflow;
+    };
   }, [open]);
 
   if (!open) return null;
 
-  return (
+  // Rendered into <body>: an animated (transformed) page wrapper would
+  // otherwise trap "position: fixed" and shrink the overlay to that wrapper.
+  return createPortal(
     <div
-      className="fixed inset-0 z-50 flex items-start sm:items-center justify-center bg-black/40 px-4 py-6 overflow-y-auto"
+      className="fixed inset-0 z-[100] flex items-start sm:items-center justify-center bg-black/40 px-4 py-6 overflow-y-auto"
       role="dialog"
       aria-modal="true"
       aria-labelledby="sus-dialog-title"
@@ -43,7 +52,7 @@ const SusSurveyDialog = ({ open, onClose, transactionId = null, defaultFeatures 
               <ClipboardList className="w-8 h-8" aria-hidden="true" />
             </div>
             <h2 id="sus-dialog-title" className="text-2xl font-bold text-[var(--color-neutral-900)]">
-              Help us improve CeduSync — 2-minute survey
+              Help us improve CeduSync — <span className="whitespace-nowrap">2-minute survey</span>
             </h2>
             <p className="mt-2 text-base text-[var(--color-neutral-600)]">
               Tell us how easy the system was to use. Your name is optional.
@@ -57,7 +66,8 @@ const SusSurveyDialog = ({ open, onClose, transactionId = null, defaultFeatures 
           <SusSurvey platform="web" transactionId={transactionId} defaultFeatures={defaultFeatures} onClose={onClose} />
         )}
       </Card>
-    </div>
+    </div>,
+    document.body,
   );
 };
 
