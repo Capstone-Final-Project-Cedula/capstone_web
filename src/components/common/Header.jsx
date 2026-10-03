@@ -7,15 +7,28 @@ import {
   Calendar,
   Clock,
   User,
+  KeyRound,
 } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
+import ChangePasswordDialog from './ChangePasswordDialog';
+import { settingsAPI, SETTINGS_UPDATED_EVENT } from '../../api/settings';
 
 const Header = () => {
   const { user, logout } = useAuth();
   const [isDropdownOpen, setIsDropdownOpen] = useState(false);
+  const [isPasswordOpen, setIsPasswordOpen] = useState(false);
   const [currentTime, setCurrentTime] = useState(new Date());
+  const [office, setOffice] = useState(null);
   const dropdownRef = useRef(null);
   const navigate = useNavigate();
+
+  // Barangay name/location come from the shared Settings, not hard-coded text.
+  useEffect(() => {
+    settingsAPI.get().then((res) => setOffice(res.data)).catch(() => {});
+    const onUpdated = (e) => setOffice(e.detail);
+    window.addEventListener(SETTINGS_UPDATED_EVENT, onUpdated);
+    return () => window.removeEventListener(SETTINGS_UPDATED_EVENT, onUpdated);
+  }, []);
 
   useEffect(() => {
     const timer = setInterval(() => {
@@ -115,7 +128,9 @@ const Header = () => {
               CEDULA MANAGEMENT SYSTEM
             </div>
             <h1 className="font-display text-[15px] font-semibold text-[var(--color-neutral-900)] leading-tight truncate">
-              Barangay San Roque, Mambajao, Camiguin
+              {office
+                ? `${office.barangay_name}, ${office.municipality}, ${office.province}`
+                : 'Community Tax Certificate Office'}
             </h1>
           </div>
         </div>
@@ -198,6 +213,14 @@ const Header = () => {
               </div>
 
               <button
+                onClick={() => { setIsDropdownOpen(false); setIsPasswordOpen(true); }}
+                className="w-full flex items-center gap-3 px-4 py-3 text-sm font-semibold text-gray-700 hover:bg-gray-50 transition-colors focus:outline-none focus:bg-gray-50"
+                role="menuitem"
+              >
+                <KeyRound className="w-4 h-4" aria-hidden="true" />
+                Change Password
+              </button>
+              <button
                 onClick={handleLogout}
                 className="w-full flex items-center gap-3 px-4 py-3 text-sm font-semibold text-red-600 hover:bg-red-50 transition-colors focus:outline-none focus:bg-red-50"
                 role="menuitem"
@@ -209,6 +232,7 @@ const Header = () => {
           )}
         </div>
       </div>
+      <ChangePasswordDialog open={isPasswordOpen} onClose={() => setIsPasswordOpen(false)} />
     </header>
   );
 };

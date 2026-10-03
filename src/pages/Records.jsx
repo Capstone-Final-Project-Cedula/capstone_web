@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { formsAPI } from '../api/forms';
+import { getApiErrorMessage } from '../api/errors';
 import { toast } from 'react-toastify';
 import { Search, Plus, X, Download, FileSearch, Mic, QrCode, Trash2, ChevronLeft, ChevronRight, FileText } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
@@ -58,7 +59,7 @@ const Records = () => {
       if (records.length === 1 && page > 1) setPage(page - 1);
       else fetchRecords();
     } catch (error) {
-      toast.error(error.response?.data?.detail || 'Unable to delete this record.');
+      toast.error(getApiErrorMessage(error, 'Unable to delete this record.'));
     } finally {
       setDeletingId(null);
     }

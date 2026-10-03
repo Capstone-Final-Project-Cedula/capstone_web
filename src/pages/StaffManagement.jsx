@@ -1,8 +1,9 @@
 import React, { useState, useEffect } from 'react';
 import { useAuth } from '../contexts/AuthContext';
 import { authAPI } from '../api/auth';
+import { getApiErrorMessage } from '../api/errors';
 import { toast } from 'react-toastify';
-import { Users, Plus, X, Lock, ShieldOff, UserPlus, Power } from 'lucide-react';
+import { Users, Plus, X, Lock, ShieldOff, UserPlus, Power, KeyRound } from 'lucide-react';
 import Card from '../components/ui/Card';
 import Button from '../components/ui/Button';
 import Badge from '../components/ui/Badge';
@@ -10,7 +11,10 @@ import Input from '../components/ui/Input';
 import { SkeletonTableRow } from '../components/ui/Skeleton';
 
 const StaffManagement = () => {
-  const { isAdmin } = useAuth();
+  const { isAdmin, user } = useAuth();
+  const [citizenUsername, setCitizenUsername] = useState('');
+  const [resetting, setResetting] = useState(false);
+  const [resetResult, setResetResult] = useState(null);
   const [staffList, setStaffList] = useState([]);
   const [listLoading, setListLoading] = useState(true);
   const [loading, setLoading] = useState(false);
@@ -37,7 +41,7 @@ const StaffManagement = () => {
       setStaffList(response.data);
     } catch (error) {
       console.error('Error fetching staff:', error);
-      toast.error(error.response?.data?.detail || 'Error loading staff');
+      toast.error(getApiErrorMessage(error, 'Error loading staff'));
     } finally {
       setListLoading(false);
     }
@@ -50,10 +54,11 @@ const StaffManagement = () => {
       await authAPI.register(formData);
       toast.success('Staff added successfully!');
       setShowAddForm(false);
-      setFormData({ username: '', password: '', full_name: '', email: '', role: 'STAFF' });
+      // Lowercase to match the API's role values ('staff' / 'admin').
+      setFormData({ username: '', password: '', full_name: '', email: '', role: 'staff' });
       fetchStaff();
     } catch (error) {
-      toast.error(error.response?.data?.detail || 'Error adding staff');
+      toast.error(getApiErrorMessage(error, 'Error adding staff'));
     } finally {
       setLoading(false);
     }
@@ -71,9 +76,27 @@ const StaffManagement = () => {
       toast.success(response.data.is_active ? 'Account activated' : 'Account deactivated');
     } catch (error) {
       console.error('Error toggling staff status:', error);
-      toast.error(error.response?.data?.detail || 'Error updating staff status');
+      toast.error(getApiErrorMessage(error, 'Error updating staff status'));
     } finally {
       setTogglingId(null);
+    }
+  };
+
+  const handleCitizenReset = async (e) => {
+    e.preventDefault();
+    const username = citizenUsername.trim();
+    if (!username) return;
+    if (!window.confirm(`Reset the mobile password of "${username}"? Their current password will stop working.`)) return;
+    setResetting(true);
+    setResetResult(null);
+    try {
+      const response = await authAPI.resetCitizenPassword(username);
+      setResetResult(response.data);
+      setCitizenUsername('');
+    } catch (error) {
+      toast.error(getApiErrorMessage(error, 'Could not reset the password.'));
+    } finally {
+      setResetting(false);
     }
   };
 
@@ -224,6 +247,9 @@ const StaffManagement = () => {
                       </Badge>
                     </td>
                     <td className="px-6 py-4">
+                      {person.id === user?.id ? (
+                        <span className="text-xs text-[var(--color-neutral-400)]">You</span>
+                      ) : (
                       <button
                         onClick={() => handleToggleActive(person.id)}
                         disabled={togglingId === person.id}
@@ -236,6 +262,7 @@ const StaffManagement = () => {
                           ? 'Deactivate'
                           : 'Activate'}
                       </button>
+                      )}
                     </td>
                   </tr>
                 ))
@@ -243,6 +270,40 @@ const StaffManagement = () => {
             </tbody>
           </table>
         </div>
+      </Card>
+
+      <Card className="p-6 mt-6">
+        <h3 className="font-display text-base font-semibold text-[var(--color-neutral-800)] flex items-center gap-2">
+          <KeyRound className="w-4.5 h-4.5 text-[var(--color-primary)]" aria-hidden="true" />
+          Reset a citizen's mobile password
+        </h3>
+        <p className="text-sm text-[var(--color-neutral-500)] mt-1 mb-4 max-w-2xl">
+          For citizens who forgot their CeduSync app password. Check their valid ID first, then give them the
+          temporary password; they should change it in the app under Profile &gt; Change Password.
+        </p>
+        <form onSubmit={handleCitizenReset} noValidate className="flex flex-col sm:flex-row gap-3 sm:items-end">
+          <Input
+            label="Citizen's username"
+            value={citizenUsername}
+            onChange={(e) => setCitizenUsername(e.target.value)}
+            containerClassName="sm:w-80"
+            autoComplete="off"
+          />
+          <Button type="submit" loading={resetting} disabled={resetting || !citizenUsername.trim()} icon={KeyRound}>
+            {resetting ? 'Resetting…' : 'Issue temporary password'}
+          </Button>
+        </form>
+        {resetResult && (
+          <div className="mt-4 rounded-[var(--radius-md)] border border-[var(--color-neutral-200)] bg-[var(--color-neutral-50)] p-4 text-sm">
+            <div>
+              Temporary password for <strong>{resetResult.full_name}</strong> (@{resetResult.username}):
+            </div>
+            <div className="font-mono text-lg font-semibold mt-1 select-all">{resetResult.temporary_password}</div>
+            <div className="text-xs text-[var(--color-neutral-500)] mt-1">
+              Shown once. It replaces their old password immediately.
+            </div>
+          </div>
+        )}
       </Card>
     </div>
   );

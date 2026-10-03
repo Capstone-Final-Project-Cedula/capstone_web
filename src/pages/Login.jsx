@@ -5,6 +5,7 @@ import { toast } from 'react-toastify';
 import { LockKeyhole, LogIn, UserRound } from 'lucide-react';
 import Input from '../components/ui/Input';
 import Button from '../components/ui/Button';
+import { getApiErrorMessage } from '../api/errors';
 
 const Login = () => {
   const [username, setUsername] = useState('');
@@ -24,7 +25,7 @@ const Login = () => {
       toast.success('Login successful!');
       navigate(from, { replace: true });
     } catch (error) {
-      toast.error(error.response?.data?.detail || 'Login failed');
+      toast.error(getApiErrorMessage(error, 'Login failed'));
     } finally {
       setLoading(false);
     }

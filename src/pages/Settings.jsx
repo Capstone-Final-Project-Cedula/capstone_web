@@ -1,20 +1,31 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { toast } from 'react-toastify';
 import { Settings as SettingsIcon, Save, Landmark, SlidersHorizontal, Info } from 'lucide-react';
 import Card, { CardBody } from '../components/ui/Card';
 import Input from '../components/ui/Input';
 import Button from '../components/ui/Button';
+import { settingsAPI, SETTINGS_UPDATED_EVENT } from '../api/settings';
+import { getApiErrorMessage } from '../api/errors';
+
+const EMPTY = {
+  barangay_name: '',
+  municipality: '',
+  province: '',
+  qr_expiry_minutes: 60,
+  basic_community_tax: 5,
+};
 
 const Settings = () => {
-  const [settings, setSettings] = useState({
-    barangayName: 'Barangay San Roque',
-    municipality: 'Mambajao',
-    province: 'Camiguin',
-    defaultTax: 5.00,
-    qrExpiryMinutes: 60,
-  });
-
+  const [settings, setSettings] = useState(EMPTY);
   const [isLoading, setIsLoading] = useState(false);
+  const [isFetching, setIsFetching] = useState(true);
+
+  useEffect(() => {
+    settingsAPI.get()
+      .then((res) => setSettings(res.data))
+      .catch((error) => toast.error(getApiErrorMessage(error, 'Could not load settings')))
+      .finally(() => setIsFetching(false));
+  }, []);
 
   const handleChange = (e) => {
     const { name, value } = e.target;
@@ -23,13 +34,24 @@ const Settings = () => {
 
   const handleSave = async (e) => {
     e.preventDefault();
+    const qrExpiry = Number(settings.qr_expiry_minutes);
+    if (!Number.isInteger(qrExpiry) || qrExpiry < 5 || qrExpiry > 1440) {
+      toast.error('QR code expiry must be a whole number from 5 to 1440 minutes.');
+      return;
+    }
     setIsLoading(true);
     try {
-      // In production, save settings to backend
-      await new Promise(resolve => setTimeout(resolve, 1000));
-      toast.success('Settings saved successfully!');
+      const res = await settingsAPI.update({
+        barangay_name: settings.barangay_name,
+        municipality: settings.municipality,
+        province: settings.province,
+        qr_expiry_minutes: qrExpiry,
+      });
+      setSettings(res.data);
+      window.dispatchEvent(new CustomEvent(SETTINGS_UPDATED_EVENT, { detail: res.data }));
+      toast.success('Settings saved. New CTCs and QR codes will use them.');
     } catch (error) {
-      toast.error('Error saving settings');
+      toast.error(getApiErrorMessage(error, 'Error saving settings'));
     } finally {
       setIsLoading(false);
     }
@@ -45,7 +67,7 @@ const Settings = () => {
           Settings
         </h1>
         <p className="text-[var(--color-neutral-500)] mt-2 max-w-3xl">
-          Configure system preferences for barangay information, CTC defaults, and QR handoff timing.
+          Configure barangay information and QR handoff timing. Changes are shared by every computer using the system.
         </p>
       </div>
 
@@ -63,7 +85,7 @@ const Settings = () => {
                       Barangay Information
                     </h2>
                     <p className="text-sm text-[var(--color-neutral-500)] mt-1">
-                      These details appear across administrative records and printed documents.
+                      Shown in the header and printed on CTCs (place of issue) and receipts.
                     </p>
                   </div>
                 </div>
@@ -71,21 +93,24 @@ const Settings = () => {
                 <div className="space-y-5">
                   <Input
                     label="Barangay Name"
-                    name="barangayName"
-                    value={settings.barangayName}
+                    name="barangay_name"
+                    value={settings.barangay_name}
                     onChange={handleChange}
+                    disabled={isFetching}
                   />
                   <Input
                     label="Municipality"
                     name="municipality"
                     value={settings.municipality}
                     onChange={handleChange}
+                    disabled={isFetching}
                   />
                   <Input
                     label="Province"
                     name="province"
                     value={settings.province}
                     onChange={handleChange}
+                    disabled={isFetching}
                   />
                 </div>
               </CardBody>
@@ -102,7 +127,7 @@ const Settings = () => {
                       System Configuration
                     </h2>
                     <p className="text-sm text-[var(--color-neutral-500)] mt-1">
-                      Set default processing values used by staff workflows.
+                      Processing values used by staff workflows.
                     </p>
                   </div>
                 </div>
@@ -110,27 +135,31 @@ const Settings = () => {
                 <div className="space-y-5">
                   <div>
                     <Input
-                      label="Default Community Tax (PHP)"
-                      name="defaultTax"
+                      label="Basic Community Tax (PHP)"
+                      name="basic_community_tax"
                       type="number"
-                      value={settings.defaultTax}
-                      onChange={handleChange}
+                      value={Number(settings.basic_community_tax).toFixed(2)}
+                      disabled
+                      readOnly
                     />
                     <p className="text-xs text-[var(--color-neutral-500)] mt-1.5">
-                      Applied as the initial community tax amount when processing a CTC.
+                      Fixed at PHP 5.00 by RA 7160 (Local Government Code). The additional tax is computed from income.
                     </p>
                   </div>
 
                   <div>
                     <Input
                       label="QR Code Expiry (minutes)"
-                      name="qrExpiryMinutes"
+                      name="qr_expiry_minutes"
                       type="number"
-                      value={settings.qrExpiryMinutes}
+                      min={5}
+                      max={1440}
+                      value={settings.qr_expiry_minutes}
                       onChange={handleChange}
+                      disabled={isFetching}
                     />
                     <p className="text-xs text-[var(--color-neutral-500)] mt-1.5">
-                      Controls how long a citizen QR code remains valid before staff must request a new one.
+                      How long a citizen's QR code stays valid (5–1440 minutes). Applies to QR codes generated after saving.
                     </p>
                   </div>
                 </div>
@@ -146,7 +175,7 @@ const Settings = () => {
               <div className="space-y-3">
                 <div className="flex justify-between gap-4 text-sm">
                   <span className="text-[var(--color-neutral-500)]">Barangay</span>
-                  <span className="font-semibold text-[var(--color-neutral-800)] text-right">{settings.barangayName}</span>
+                  <span className="font-semibold text-[var(--color-neutral-800)] text-right">{settings.barangay_name}</span>
                 </div>
                 <div className="flex justify-between gap-4 text-sm">
                   <span className="text-[var(--color-neutral-500)]">Location</span>
@@ -155,15 +184,15 @@ const Settings = () => {
                   </span>
                 </div>
                 <div className="flex justify-between gap-4 text-sm">
-                  <span className="text-[var(--color-neutral-500)]">Default tax</span>
+                  <span className="text-[var(--color-neutral-500)]">Basic tax</span>
                   <span className="font-semibold text-[var(--color-neutral-800)] text-right">
-                    PHP {Number(settings.defaultTax || 0).toFixed(2)}
+                    PHP {Number(settings.basic_community_tax || 0).toFixed(2)}
                   </span>
                 </div>
                 <div className="flex justify-between gap-4 text-sm">
                   <span className="text-[var(--color-neutral-500)]">QR validity</span>
                   <span className="font-semibold text-[var(--color-neutral-800)] text-right">
-                    {settings.qrExpiryMinutes || 0} minutes
+                    {settings.qr_expiry_minutes || 0} minutes
                   </span>
                 </div>
               </div>
@@ -179,7 +208,7 @@ const Settings = () => {
                     Review before saving
                   </h3>
                   <p className="text-sm text-[var(--color-neutral-600)] mt-1">
-                    Changes affect staff-facing defaults and official location labels used throughout the app.
+                    Changes apply to CTCs and QR codes created afterwards; existing records keep their printed details.
                   </p>
                 </div>
               </div>
@@ -189,7 +218,7 @@ const Settings = () => {
               <Button
                 type="submit"
                 loading={isLoading}
-                disabled={isLoading}
+                disabled={isLoading || isFetching}
                 icon={Save}
                 className="w-full sm:w-auto xl:w-full"
               >

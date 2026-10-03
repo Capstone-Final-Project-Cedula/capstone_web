@@ -15,6 +15,7 @@ import {
 import QRScanner from '../components/QRScanner/QRScanner';
 import { qrAPI } from '../api/qr';
 import { formsAPI } from '../api/forms';
+import { getApiErrorMessage } from '../api/errors';
 import Card from '../components/ui/Card';
 import Button from '../components/ui/Button';
 
@@ -41,7 +42,7 @@ const QRScan = () => {
       setShowScanner(false);
     } catch (error) {
       console.error('Error scanning QR:', error);
-      toast.error(error.response?.data?.detail || 'Invalid QR Code. Please try again.');
+      toast.error(getApiErrorMessage(error, 'Invalid QR Code. Please try again.'));
     } finally {
       setIsLoading(false);
     }

@@ -22,6 +22,7 @@ import { speechAPI } from '../api/speech';
 import { extractionAPI } from '../api/extraction';
 import { formsAPI } from '../api/forms';
 import apiClient from '../api/client';
+import { getApiErrorMessage } from '../api/errors';
 import LoadingSpinner from '../components/common/LoadingSpinner';
 
 // ═══════════════════════════════════════════════════════════════
@@ -192,16 +193,6 @@ const cleanText = (value) => {
 const cleanNumber = (value) => {
   const cleaned = String(value || '').replace(/[^\d.]/g, '');
   return cleaned ? Number(cleaned) : null;
-};
-
-const getApiErrorMessage = (error, fallback = "Something didn't go through. Let's try that again.") => {
-  const detail = error.response?.data?.detail;
-  if (typeof detail === 'string') return detail;
-  if (Array.isArray(detail)) {
-    return detail.map((item) => item.msg || JSON.stringify(item)).join(' ');
-  }
-  if (error.response?.data) return JSON.stringify(error.response.data);
-  return fallback;
 };
 
 const getSpeechRecognition = () =>
@@ -831,61 +822,6 @@ function useBrowserSpeechRecognition() {
   useEffect(() => () => stopListening(), [stopListening]);
 
   return { isListening, listenOnce, stopListening };
-}
-
-/**
- * Hook: useMediaRecorder
- * Records audio from microphone for backend transcription.
- */
-function useMediaRecorder() {
-  const [isRecording, setIsRecording] = useState(false);
-  const mediaRecorderRef = useRef(null);
-  const chunksRef = useRef([]);
-  const streamRef = useRef(null);
-
-  const stopRecording = useCallback(() => {
-    if (mediaRecorderRef.current?.state === 'recording') {
-      mediaRecorderRef.current.stop();
-    }
-    streamRef.current?.getTracks().forEach((t) => t.stop());
-    streamRef.current = null;
-    setIsRecording(false);
-  }, []);
-
-  const startRecording = useCallback(async (onStop) => {
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      const mimeType = MediaRecorder.isTypeSupported('audio/webm') ? 'audio/webm' : '';
-      const recorder = new MediaRecorder(stream, mimeType ? { mimeType } : undefined);
-
-      chunksRef.current = [];
-      streamRef.current = stream;
-
-      recorder.ondataavailable = (e) => {
-        if (e.data.size > 0) chunksRef.current.push(e.data);
-      };
-
-      recorder.onstop = async () => {
-        const blob = new Blob(chunksRef.current, { type: mimeType || 'audio/webm' });
-        stream.getTracks().forEach((t) => t.stop());
-        streamRef.current = null;
-        setIsRecording(false);
-        await onStop?.(blob);
-      };
-
-      mediaRecorderRef.current = recorder;
-      recorder.start();
-      setIsRecording(true);
-      return true;
-    } catch {
-      toast.error('Microphone access was blocked or unavailable.');
-      return false;
-    }
-  }, []);
-
-  useEffect(() => () => stopRecording(), [stopRecording]);
-
-  return { isRecording, startRecording, stopRecording };
 }
 
 /**
@@ -1573,6 +1509,7 @@ const NewApplication = () => {
   }, [draftAnswer, currentField.key, setDraftAnswer, setAnswers, setVoiceError, setStatusMessage]);
 
   // ── Media Recorder (Backend Transcription) ──
+  const transcribeAnswerRef = useRef(null);
   const startRecording = useCallback(async () => {
     try {
       setVoiceError('');
@@ -1592,7 +1529,9 @@ const NewApplication = () => {
         stream.getTracks().forEach((t) => t.stop());
         streamRef.current = null;
         setIsRecording(false);
-        await transcribeAnswer(blob);
+        // Use the latest transcribeAnswer: this callback is created once, and the
+        // first-render copy would file every answer under the first question's field.
+        await transcribeAnswerRef.current(blob);
       };
 
       mediaRecorderRef.current = recorder;
@@ -1656,6 +1595,7 @@ const NewApplication = () => {
       setIsTranscribing(false);
     }
   }, [currentField, addChatMessage]);
+  transcribeAnswerRef.current = transcribeAnswer;
 
   // ── Navigation ──
   const goToField = useCallback((index) => {
@@ -1788,8 +1728,6 @@ const NewApplication = () => {
   // ── Conversation Engine Hook ──
   const {
     isConversationActive,
-    isSpeaking: isConversationSpeaking,
-    isListening: isConversationListening,
     startConversation,
     stopConversation,
     startVoiceReview,
