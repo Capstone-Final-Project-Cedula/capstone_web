@@ -62,19 +62,19 @@ const INTERVIEW_FIELDS = [
   {
     key: 'date',
     label: 'Date of birth',
-    question: "What is your date of birth? Please say it in this format: month-day-year, like 01-15-1990.",
-    hint: 'Example: 01-15-1990 (Month-Day-Year)',
+    question: "When is your birthday? Please say the month, day, and year.",
+    hint: 'Any way is fine: May 10 1990, 10 May 1990, 05/10/1990',
   },
   {
     key: 'sex',
     label: 'Sex',
-    question: "Could you tell me your sex?",
-    hint: 'Say Male or Female',
+    question: "Are you male or female?",
+    hint: 'Male or Female',
   },
   {
     key: 'civil_status',
     label: 'Civil status',
-    question: "What is your current civil status?",
+    question: "Are you single, married, widowed, or separated?",
     hint: 'Single, Married, Widowed, or Separated',
   },
   {
@@ -86,8 +86,8 @@ const INTERVIEW_FIELDS = [
   {
     key: 'icr_no',
     label: 'ICR number',
-    question: "Do you have an ICR number?",
-    hint: 'Leave blank if not applicable',
+    question: "If you have an ICR number, please say it. If not, just say none.",
+    hint: 'Only for foreign residents. Say none if not applicable',
     optional: true,
   },
   {
@@ -99,14 +99,14 @@ const INTERVIEW_FIELDS = [
   {
     key: 'height',
     label: 'Height (cm)',
-    question: "What is your height in centimeters?",
-    hint: 'Example: 165',
+    question: "How tall are you? You can say it in centimeters, or in feet and inches.",
+    hint: 'Example: 165 cm, or 5 feet 5',
   },
   {
     key: 'weight',
     label: 'Weight (kg)',
-    question: "What is your weight in kilograms?",
-    hint: 'Example: 60',
+    question: "How much do you weigh? You can say it in kilos or pounds.",
+    hint: 'Example: 60 kilos, or 130 pounds',
   },
   {
     key: 'occupation',
@@ -117,8 +117,8 @@ const INTERVIEW_FIELDS = [
   {
     key: 'gross_annual_income',
     label: 'Gross annual income',
-    question: "What is your gross annual income in pesos?",
-    hint: 'Example: 240000',
+    question: "How much do you earn? You can tell me the amount per year or per month. If none, say none.",
+    hint: 'Example: 240,000 a year, or 20,000 a month',
   },
 ];
 
@@ -202,26 +202,21 @@ const getSpeechRecognition = () =>
 const isSpeechSupported = () => Boolean(getSpeechRecognition());
 
 const isBlankAnswer = (value) =>
-  /^(none|no|not applicable|n\/a|blank|skip)$/i.test(String(value || '').trim());
+  /^(none|no|not applicable|n\/a|blank|skip|wala|wala po|no middle name)$/i.test(String(value || '').trim().replace(/[.!]$/, ''));
+
+// Lowercase, drop punctuation and the polite "po"/"opo" so "Yes po." and "Opo" both count.
+const normalizeReply = (value) =>
+  String(value || '').toLowerCase().replace(/[.,!?]/g, ' ').replace(/\b(po|ho)\b/g, ' ').replace(/\s+/g, ' ').trim();
 
 const isYesAnswer = (value) =>
-  /^(yes|yeah|yep|correct|right|that is correct|that's correct|spelling is correct|okay|ok|sure|confirm|confirmed|proceed|go ahead)$/i.test(
-    String(value || '').trim()
+  /^(yes|yeah|yep|yup|correct|right|that is correct|that's correct|that's right|spelling is correct|okay|ok|sure|confirm|confirmed|proceed|go ahead|opo|oo|oho|tama|tama yan|sige|yes correct)$/.test(
+    normalizeReply(value)
   );
 
 const isNoAnswer = (value) =>
-  /^(no|nope|not correct|that is wrong|that's wrong|incorrect|wrong|cancel|stop|don't|do not|nevermind)$/i.test(
-    String(value || '').trim()
+  /^(no|nope|not correct|that is wrong|that's wrong|incorrect|wrong|cancel|stop|don't|do not|nevermind|hindi|mali|hindi tama|di)$/.test(
+    normalizeReply(value)
   );
-
-const normalizeSpelledName = (value) => {
-  const text = String(value || '').trim();
-  const singleLetters = text.match(/\b[a-z]\b/gi);
-  if (singleLetters && singleLetters.length >= 2) {
-    return singleLetters.join('');
-  }
-  return text.replace(/[^a-z]/gi, '');
-};
 
 const TEXT_TITLE_CASE_FIELDS = new Set([
   'surname',
@@ -361,6 +356,71 @@ const validateCivilStatus = (value) => {
   }
   return null;
 };
+
+const MONTH_NAMES = ['January', 'February', 'March', 'April', 'May', 'June', 'July',
+  'August', 'September', 'October', 'November', 'December'];
+
+/**
+ * Used only when the backend cannot be reached: a strict, simpler check so a
+ * clearly wrong answer ("nails" for sex) is still not accepted.
+ */
+const localInterpret = (key, text) => {
+  const t = String(text || '').trim();
+  const field = FIELD_MAP[key];
+  const fail = (message) => ({ ok: false, message, methods: ['local'] });
+  const ok = (value, display) => ({ ok: true, value, display: display || value, methods: ['local'] });
+  if (!t) return field?.optional ? ok('') : fail(`Please tell me your ${field?.label.toLowerCase()}.`);
+  if (field?.optional && isBlankAnswer(t)) return ok('');
+  switch (key) {
+    case 'sex': {
+      const v = validateSex(t);
+      return v ? ok(v) : fail('Please answer male or female.');
+    }
+    case 'civil_status': {
+      const v = validateCivilStatus(t);
+      return v ? ok(v) : fail('Please answer single, married, widowed, or separated.');
+    }
+    case 'date': {
+      const p = parseDateParts(t);
+      if (!p) return fail('Please say your full birthday, for example May 10, 1990.');
+      return ok(`${MONTH_NAMES[p.month - 1]} ${p.day}, ${p.year}`);
+    }
+    case 'height': {
+      const n = cleanNumber(t);
+      return n >= 50 && n <= 250 ? ok(String(n)) : fail('Please say your height in centimeters.');
+    }
+    case 'weight': {
+      const n = cleanNumber(t);
+      return n >= 20 && n <= 300 ? ok(String(n)) : fail('Please say your weight in kilos.');
+    }
+    case 'gross_annual_income': {
+      const n = cleanNumber(t);
+      return n !== null || /^(none|wala|zero)$/i.test(t) ? ok(String(n || 0)) : fail('Please say an amount.');
+    }
+    default:
+      return ok(validateFieldValue(key, t));
+  }
+};
+
+/**
+ * Understand one answer for one field. The backend uses DistilBERT (names,
+ * places) and regex (dates, numbers, choices) and rejects answers that do not
+ * fit the question. Falls back to localInterpret if the backend is unreachable.
+ */
+const interpretAnswer = async (key, text) => {
+  try {
+    const { data } = await extractionAPI.understandAnswer(key, String(text || ''));
+    return data;
+  } catch (error) {
+    if (error.response?.status === 401) throw error;
+    console.warn('Answer check unavailable, using the local check:', error);
+    return localInterpret(key, text);
+  }
+};
+
+const METHOD_LABELS = { distilbert: 'DistilBERT', regex: 'regex', gazetteer: 'gazetteer', local: 'offline check' };
+const describeMethods = (methods = [], verb = 'Understood') =>
+  methods.length ? `${verb} with ${methods.map((m) => METHOD_LABELS[m] || m).join(' + ')}` : '';
 
 const validateFieldValue = (key, value) => {
   if (key === 'sex') return validateSex(value) || value;
@@ -552,14 +612,15 @@ const buildApplicantData = (answers) => {
     given_name: titleCaseWords(answers.given_name),
     middle_name: cleanText(answers.middle_name),
     address: titleCaseWords(answers.address),
-    sex: sex || 'Male',
-    civil_status: civilStatus || 'Single',
+    // No silent defaults: a missing or unreadable value is caught by validateFormData.
+    sex: sex || null,
+    civil_status: civilStatus || null,
     citizenship: titleCaseWords(answers.citizenship || 'Filipino'),
     place_of_birth: cleanText(titleCaseWords(answers.place_of_birth)),
     occupation: cleanText(titleCaseWords(answers.occupation)),
     gross_annual_income: cleanNumber(answers.gross_annual_income) || 0,
     tax_classification: answers.tax_classification || 'A',
-    date_of_birth: dob || '2000-01-01',
+    date_of_birth: dob || null,
     icr_number: cleanText(answers.icr_no),
     height_cm: cleanNumber(answers.height) || 0,
     weight_kg: cleanNumber(answers.weight) || 0,
@@ -571,14 +632,14 @@ const validateFormData = (formData) => {
   if (!formData.surname) errors.push('Surname is required');
   if (!formData.given_name) errors.push('Given name is required');
   if (!formData.address) errors.push('Address is required');
-  if (formData.sex && !['Male', 'Female'].includes(formData.sex)) {
+  if (!['Male', 'Female'].includes(formData.sex)) {
     errors.push('Sex must be Male or Female');
   }
-  if (formData.civil_status && !['Single', 'Married', 'Widowed', 'Separated'].includes(formData.civil_status)) {
+  if (!['Single', 'Married', 'Widowed', 'Separated'].includes(formData.civil_status)) {
     errors.push('Civil status must be Single, Married, Widowed, or Separated');
   }
-  if (formData.date_of_birth && !/^\d{4}-\d{2}-\d{2}$/.test(formData.date_of_birth)) {
-    errors.push('Date of birth must be in YYYY-MM-DD format');
+  if (!formData.date_of_birth || !/^\d{4}-\d{2}-\d{2}$/.test(formData.date_of_birth)) {
+    errors.push('Date of birth is missing or could not be read');
   }
   if (formData.gross_annual_income && formData.gross_annual_income < 0) {
     errors.push('Gross annual income must be a positive number');
@@ -667,8 +728,9 @@ const parseVoiceCorrections = (transcript) => {
     const baseLabel = field.label.toLowerCase().replace(/\s*\([^)]*\)/g, '').trim();
     const baseKey = field.key.replace(/_/g, ' ');
     const extras = [];
-    if (field.key === 'date') extras.push('date of birth');
-    if (field.key === 'gross_annual_income') extras.push('income');
+    if (field.key === 'date') extras.push('date of birth', 'birthday', 'birth date', 'birthdate');
+    if (field.key === 'sex') extras.push('gender');
+    if (field.key === 'gross_annual_income') extras.push('income', 'salary', 'annual income');
     if (field.key === 'icr_no') extras.push('icr number');
     return {
       ...field,
@@ -889,17 +951,24 @@ function useConversationEngine({
     }, 450);
   }, [setCurrentFieldIndex, setStatusMessage, setPhase]);
 
+  // `value` is already normalized by interpretAnswer (e.g. "May 10, 1990", "168").
   const saveSpokenAnswer = useCallback((fieldIndex, value) => {
     const field = INTERVIEW_FIELDS[fieldIndex];
-    const finalValue = validateFieldValue(field.key, value);
-    setDraftAnswer(finalValue);
+    setDraftAnswer(value);
     setAnswers((prev) => {
-      const next = { ...prev, [field.key]: finalValue };
+      const next = { ...prev, [field.key]: value };
       answersRef.current = next;
       return next;
     });
-    addChatMessage('user', finalValue || '(blank)');
-  }, [setAnswers, setDraftAnswer, addChatMessage]);
+  }, [setAnswers, setDraftAnswer]);
+
+  // How many times each question was answered with something unusable.
+  const attemptsRef = useRef({});
+  const MAX_ATTEMPTS = 3;
+  const countAttempt = (fieldIndex) => {
+    attemptsRef.current[fieldIndex] = (attemptsRef.current[fieldIndex] || 0) + 1;
+    return attemptsRef.current[fieldIndex];
+  };
 
   const askQuestion = useCallback((fieldIndex = currentFieldIndexRef.current) => {
     const field = INTERVIEW_FIELDS[fieldIndex];
@@ -968,75 +1037,173 @@ function useConversationEngine({
     recognition.start();
   }, [setDraftAnswer, setVoiceError, setStatusMessage, setPhase]);
 
-  const handleSpokenAnswer = useCallback((fieldIndex, transcript) => {
+  // Save a value the applicant gave and move on (or check the spelling of a name first).
+  const acceptAnswer = useCallback((fieldIndex, result) => {
     const field = INTERVIEW_FIELDS[fieldIndex];
-    const isOptional = field.optional;
+    attemptsRef.current[fieldIndex] = 0;
+    saveSpokenAnswer(fieldIndex, result.value || '');
+    addChatMessage('assistant', `${field.label}: ${result.display || result.value || 'none'}`, describeMethods(result.methods));
+
+    if (field.requiresSpellingCheck && result.value) {
+      setStatusMessage(`I heard "${result.value}". Checking the spelling...`);
+      speak(
+        `I heard ${result.value}. Is the spelling correct? Say yes, or spell your ${field.label.toLowerCase()} letter by letter.`,
+        () => listenForSpelling(fieldIndex, result.value)
+      );
+      return;
+    }
+
+    const transition = pickRandom(CONVERSATION_TRANSITIONS);
+    // Read back values the system converted, so a misheard date or number is caught right away.
+    const readBack = ['date', 'height', 'weight', 'gross_annual_income'].includes(field.key) && result.display
+      ? ` I got ${result.display}.`
+      : '';
+    setStatusMessage(`${transition} Moving to the next question.`);
+    speak(`${transition}${readBack}`, moveToNextQuestion);
+  }, [speak, saveSpokenAnswer, moveToNextQuestion, setStatusMessage, addChatMessage]);
+
+  // Too many unusable answers: leave the field blank for the review step instead of looping forever.
+  const giveUpOnField = useCallback((fieldIndex) => {
+    const field = INTERVIEW_FIELDS[fieldIndex];
+    attemptsRef.current[fieldIndex] = 0;
+    const msg = `Let's skip your ${field.label.toLowerCase()} for now. The staff can fill it in at the review.`;
+    addChatMessage('assistant', msg);
+    speak(msg, moveToNextQuestion);
+  }, [speak, moveToNextQuestion, addChatMessage]);
+
+  const handleSpokenAnswer = useCallback(async (fieldIndex, transcript) => {
+    const field = INTERVIEW_FIELDS[fieldIndex];
     const spokenValue = transcript.trim();
 
-    if (!spokenValue && !isOptional) {
+    if (!spokenValue && !field.optional) {
+      if (countAttempt(fieldIndex) >= MAX_ATTEMPTS) {
+        giveUpOnField(fieldIndex);
+        return;
+      }
       setPhase(PHASE.RETRY);
       setStatusMessage("I didn't hear an answer. Asking again...");
       speak(pickRandom(RETRY_PHRASES), () => askQuestion(fieldIndex));
       return;
     }
 
-    const finalValue = isBlankAnswer(spokenValue) && isOptional ? '' : spokenValue;
-    saveSpokenAnswer(fieldIndex, finalValue);
+    if (spokenValue) addChatMessage('user', spokenValue);
+    setPhase(PHASE.THINKING);
+    setStatusMessage('Understanding your answer...');
 
-    if (field.requiresSpellingCheck && finalValue) {
-      setStatusMessage(`I heard "${finalValue}". Checking the spelling...`);
-      speak(
-        `I heard ${finalValue}. Is the spelling correct? Say yes, or spell your ${field.label.toLowerCase()} letter by letter.`,
-        () => listenForSpelling(fieldIndex, finalValue)
-      );
+    let result;
+    try {
+      result = await interpretAnswer(field.key, spokenValue);
+    } catch {
+      return; // session expired: the API client sends the user to the login page
+    }
+    if (!conversationActiveRef.current) return;
+
+    if (!result.ok) {
+      if (result.reason !== 'unclear' && countAttempt(fieldIndex) >= MAX_ATTEMPTS) {
+        giveUpOnField(fieldIndex);
+        return;
+      }
+      setPhase(PHASE.RETRY);
+      setStatusMessage(result.message);
+      addChatMessage('assistant', result.message, result.reason === 'unclear' ? '' : describeMethods(result.methods, 'Checked'));
+      // "What?" / "Pakiulit" -> repeat the whole question; otherwise say what is needed and listen again.
+      if (result.reason === 'unclear') speak(result.message, () => askQuestion(fieldIndex));
+      else speak(result.message, () => listenForAnswer(fieldIndex));
       return;
     }
 
-    const transition = pickRandom(CONVERSATION_TRANSITIONS);
-    setStatusMessage(`${transition} Moving to the next question.`);
-    speak(transition, moveToNextQuestion);
-  }, [speak, saveSpokenAnswer, moveToNextQuestion, askQuestion, setStatusMessage, setPhase]);
+    if (result.needs_confirmation) {
+      const prompt = `${result.message} Say yes, or say it again.`;
+      addChatMessage('assistant', prompt, describeMethods(result.methods, 'Checked'));
+      speak(prompt, () => listenForConfirmation(fieldIndex, result));
+      return;
+    }
+
+    acceptAnswer(fieldIndex, result);
+  }, [speak, askQuestion, acceptAnswer, giveUpOnField, setStatusMessage, setPhase, addChatMessage]);
+
+  // "I heard Nails. Is that the place where you were born?" -> yes / no / a new answer.
+  const listenForConfirmation = useCallback((fieldIndex, result) => {
+    listenOnce({
+      onStart: () => {
+        setPhase(PHASE.LISTENING);
+        setStatusMessage('Listening for yes or no...');
+      },
+      onError: () => {},
+      onEnd: (heard) => {
+        if (!conversationActiveRef.current) return;
+        const reply = heard.trim();
+        if (isYesAnswer(reply)) {
+          addChatMessage('user', reply);
+          acceptAnswer(fieldIndex, result);
+        } else if (!reply || isNoAnswer(reply)) {
+          if (reply) addChatMessage('user', reply);
+          speak(`Okay. Please say your ${INTERVIEW_FIELDS[fieldIndex].label.toLowerCase()} again.`, () =>
+            listenForAnswer(fieldIndex)
+          );
+        } else {
+          handleSpokenAnswer(fieldIndex, reply);  // they simply said the corrected answer
+        }
+      },
+    });
+  }, [listenOnce, speak, acceptAnswer, handleSpokenAnswer, setPhase, setStatusMessage, addChatMessage]);
 
   const listenForSpelling = useCallback((fieldIndex, baseAnswer) => {
-    const SpeechRecognition = getSpeechRecognition();
-    if (!SpeechRecognition) return;
-
-    const recognition = new SpeechRecognition();
-    capturedSpeechRef.current = '';
-    recognition.lang = 'en-US';
-    recognition.continuous = false;
-    recognition.interimResults = true;
-
-    recognition.onstart = () => {
-      setPhase(PHASE.LISTENING);
-      setStatusMessage('Listening for letter-by-letter spelling...');
+    const field = INTERVIEW_FIELDS[fieldIndex];
+    const goNext = (value) => {
+      saveSpokenAnswer(fieldIndex, value);
+      attemptsRef.current[fieldIndex] = 0;
+      setStatusMessage(`Saved ${field.label}: ${value || 'blank'}.`);
+      speak(`Thank you, I saved ${value}. Let's continue.`, moveToNextQuestion);
     };
 
-    recognition.onresult = (event) => {
-      let finalTranscript = '';
-      let interimTranscript = '';
-      for (let i = event.resultIndex; i < event.results.length; i++) {
-        const transcript = event.results[i][0].transcript;
-        if (event.results[i].isFinal) finalTranscript += transcript;
-        else interimTranscript += transcript;
-      }
-      const heard = (finalTranscript || interimTranscript).trim();
-      if (heard) capturedSpeechRef.current = heard;
-    };
-
-    recognition.onend = () => {
-      if (!conversationActiveRef.current) return;
-      setPhase(PHASE.THINKING);
-      const transcript = capturedSpeechRef.current.trim();
-      const spelledName = isYesAnswer(transcript) ? '' : normalizeSpelledName(transcript);
-      const finalValue = spelledName || baseAnswer;
-      saveSpokenAnswer(fieldIndex, finalValue);
-      setStatusMessage(`Saved ${INTERVIEW_FIELDS[fieldIndex].label}: ${finalValue || 'blank'}.`);
-      speak(`Thank you. I've saved that. Let's continue.`, moveToNextQuestion);
-    };
-
-    recognition.start();
-  }, [saveSpokenAnswer, moveToNextQuestion, setStatusMessage, setPhase, speak]);
+    listenOnce({
+      onStart: () => {
+        setPhase(PHASE.LISTENING);
+        setStatusMessage('Listening: say yes, or spell it letter by letter...');
+      },
+      onError: () => {},
+      onEnd: async (heard) => {
+        if (!conversationActiveRef.current) return;
+        setPhase(PHASE.THINKING);
+        const reply = heard.trim();
+        if (!reply || isYesAnswer(reply)) {
+          if (reply) addChatMessage('user', reply);
+          goNext(baseAnswer);
+          return;
+        }
+        addChatMessage('user', reply);
+        if (countAttempt(fieldIndex) > MAX_ATTEMPTS) {
+          goNext(baseAnswer);  // keep the first answer; staff can still fix it at the review
+          return;
+        }
+        if (isNoAnswer(reply)) {
+          // Before: "no" was saved as the name. Now it means "let me spell it".
+          speak(`Okay. Please spell your ${field.label.toLowerCase()} letter by letter, like C, R, U, Z.`, () =>
+            listenForSpelling(fieldIndex, baseAnswer)
+          );
+          return;
+        }
+        let result;
+        try {
+          result = await interpretAnswer(field.key, reply);  // spelled letters or a corrected name
+        } catch {
+          return;
+        }
+        if (!conversationActiveRef.current) return;
+        if (!result.ok || !result.value) {
+          speak(`${result.message || "I didn't get that."} Say yes if ${baseAnswer} is correct, or spell it letter by letter.`, () =>
+            listenForSpelling(fieldIndex, baseAnswer)
+          );
+          return;
+        }
+        addChatMessage('assistant', `${field.label}: ${result.value}`, describeMethods(result.methods));
+        speak(`I have ${result.value}. Is that correct? Say yes, or spell it again.`, () =>
+          listenForSpelling(fieldIndex, result.value)
+        );
+      },
+    });
+  }, [listenOnce, saveSpokenAnswer, moveToNextQuestion, setStatusMessage, setPhase, speak, addChatMessage]);
 
   const startConversation = useCallback(() => {
     if (!isSpeechSupported()) {
@@ -1099,7 +1266,7 @@ function useConversationEngine({
           );
         }
       },
-      onEnd: (heard) => {
+      onEnd: async (heard) => {
         if (!conversationActiveRef.current) return;
         setPhase(PHASE.THINKING);
         const trimmed = heard.trim();
@@ -1125,22 +1292,37 @@ function useConversationEngine({
           return;
         }
 
-        setAnswers((prev) => {
-          const next = { ...prev };
-          corrections.forEach((c) => {
-            const field = FIELD_MAP[c.key];
-            const isOptional = field?.optional;
-            let finalValue = isBlankAnswer(c.value) && isOptional ? '' : c.value;
-            finalValue = validateFieldValue(c.key, finalValue);
-            next[c.key] = finalValue;
-          });
-          answersRef.current = next;
-          return next;
-        });
+        // Check each corrected value the same way as during the interview.
+        let checked;
+        try {
+          checked = await Promise.all(corrections.map(async (c) => ({ ...c, result: await interpretAnswer(c.key, c.value) })));
+        } catch {
+          return;
+        }
+        if (!conversationActiveRef.current) return;
+        const accepted = checked.filter((c) => c.result.ok);
+        const rejected = checked.filter((c) => !c.result.ok);
 
-        const readable = corrections.map((c) => `${c.label} to ${c.value}`).join(', ');
-        setStatusMessage(`Updated ${corrections.length} field${corrections.length > 1 ? 's' : ''}.`);
-        addChatMessage('assistant', `Updated: ${readable}`);
+        if (accepted.length) {
+          setAnswers((prev) => {
+            const next = { ...prev };
+            accepted.forEach((c) => { next[c.key] = c.result.value || ''; });
+            answersRef.current = next;
+            return next;
+          });
+        }
+
+        const readable = accepted.map((c) => `${c.label} to ${c.result.display || c.result.value || 'none'}`).join(', ');
+        const problems = rejected.map((c) => `For ${c.label.toLowerCase()}: ${c.result.message}`).join(' ');
+        setStatusMessage(`Updated ${accepted.length} field${accepted.length === 1 ? '' : 's'}.`);
+        if (readable) addChatMessage('assistant', `Updated: ${readable}`);
+        if (problems) {
+          addChatMessage('assistant', problems);
+          speak(`${readable ? `I updated ${readable}. ` : ''}${problems} Please say the correction again.`, () =>
+            listenForReviewCorrections()
+          );
+          return;
+        }
         speak(`Got it, I updated ${readable}. Shall I proceed to issue the Cedula now?`, () =>
           listenForIssueConfirmation()
         );
@@ -1264,7 +1446,7 @@ const PhaseIndicator = React.memo(({ phase }) => {
 });
 PhaseIndicator.displayName = 'PhaseIndicator';
 
-const ChatBubble = React.memo(({ role, text, isLatest }) => {
+const ChatBubble = React.memo(({ role, text, meta, isLatest }) => {
   const isAssistant = role === 'assistant';
   return (
     <div
@@ -1287,6 +1469,9 @@ const ChatBubble = React.memo(({ role, text, isLatest }) => {
         }`}
       >
         {text}
+        {meta && (
+          <div className={`mt-1 text-[11px] font-medium ${isAssistant ? 'text-gray-500' : 'text-indigo-100'}`}>{meta}</div>
+        )}
       </div>
     </div>
   );
@@ -1294,16 +1479,20 @@ const ChatBubble = React.memo(({ role, text, isLatest }) => {
 ChatBubble.displayName = 'ChatBubble';
 
 /** Conversational summary row used on the review / voice-review screens. */
-const SummaryRow = React.memo(({ label, value, onChange, onAskAgain, highlighted }) => (
+const SummaryRow = React.memo(({ label, value, onChange, onAskAgain, highlighted, error }) => (
   <div
     className={`rounded-xl border p-3.5 transition-colors ${
-      highlighted ? 'border-indigo-300 bg-indigo-50' : 'border-gray-100 bg-white hover:border-gray-200'
+      error
+        ? 'border-rose-300 bg-rose-50'
+        : highlighted ? 'border-indigo-300 bg-indigo-50' : 'border-gray-100 bg-white hover:border-gray-200'
     }`}
   >
     <div className="flex items-center justify-between gap-3">
       <span className="text-sm font-medium text-gray-600">{label}</span>
       <div className="flex items-center gap-2">
-        {String(value || '').trim() ? <FaCheck className="text-emerald-600" size={12} /> : null}
+        {error
+          ? <FaExclamationTriangle className="text-rose-600" size={12} />
+          : String(value || '').trim() ? <FaCheck className="text-emerald-600" size={12} /> : null}
         {onAskAgain && (
           <button
             type="button"
@@ -1325,6 +1514,7 @@ const SummaryRow = React.memo(({ label, value, onChange, onAskAgain, highlighted
     ) : (
       <div className="mt-1 truncate text-sm text-gray-500">{value || 'No answer yet'}</div>
     )}
+    {error && <p className="mt-1.5 text-xs font-medium text-rose-700" role="alert">{error}</p>}
   </div>
 ));
 SummaryRow.displayName = 'SummaryRow';
@@ -1359,6 +1549,9 @@ const NewApplication = () => {
   const [isTranscribing, setIsTranscribing] = useState(false);
   const [isSpeaking, setIsSpeaking] = useState(false);
   const [isIssuing, setIsIssuing] = useState(false);
+  const [isChecking, setIsChecking] = useState(false);
+  const [fieldError, setFieldError] = useState('');      // why the current answer was not accepted
+  const [reviewErrors, setReviewErrors] = useState({});   // per-field problems found before issuing
 
   // ── Refs ──
   const mediaRecorderRef = useRef(null);
@@ -1384,10 +1577,13 @@ const NewApplication = () => {
   useEffect(() => { answersRef.current = answers; }, [answers]);
 
   // ── Auto-focus input on field change ──
+  const currentFieldKeyRef = useRef(currentField.key);
+  currentFieldKeyRef.current = currentField.key;
   useEffect(() => {
     setDraftAnswer(answers[currentField.key] || '');
     inputRef.current?.focus();
   }, [answers, currentField.key, currentFieldIndex]);
+  useEffect(() => { setFieldError(''); }, [currentField.key]);
 
   // ── Auto-scroll chat ──
   useEffect(() => {
@@ -1408,8 +1604,8 @@ const NewApplication = () => {
   }, []);
 
   // ── Chat Helpers ──
-  const addChatMessage = useCallback((role, text) => {
-    setChatHistory((prev) => [...prev, { role, text, id: generateId() }]);
+  const addChatMessage = useCallback((role, text, meta = '') => {
+    setChatHistory((prev) => [...prev, { role, text, meta, id: generateId() }]);
   }, []);
 
   // ── Speech Synthesis (standalone for non-conversation use) ──
@@ -1435,20 +1631,55 @@ const NewApplication = () => {
     });
   }, []);
 
-  // ── Save Answer ──
-  const saveAnswer = useCallback((options = {}) => {
-    const value = draftAnswer.trim();
-    const isOptional = currentField.optional;
-
-    if (!value && !isOptional) {
-      toast.warning(`Please answer ${currentField.label.toLowerCase()} before continuing.`);
-      return;
+  // ── Check & store one answer (typed, dictated, or recorded) ──
+  // Returns true when the answer was understood and saved.
+  const applyAnswer = useCallback(async (field, text, { quiet = false } = {}) => {
+    const value = String(text || '').trim();
+    if (!value && !field.optional) {
+      if (!quiet) setFieldError(`Please answer ${field.label.toLowerCase()} before continuing.`);
+      return false;
     }
+    setIsChecking(true);
+    let result;
+    try {
+      result = await interpretAnswer(field.key, value);
+    } catch {
+      return false;
+    } finally {
+      setIsChecking(false);
+    }
+    const stillHere = currentFieldKeyRef.current === field.key;  // staff may have moved to another question
+    if (!result.ok) {
+      if (!quiet && stillHere) {
+        setFieldError(result.message);
+        setPhase(PHASE.RETRY);
+        setStatusMessage(result.message);
+      }
+      return false;
+    }
+    // Typed or dictated by staff: an unusual place/occupation is kept as entered (no confirmation prompt).
+    setAnswers((prev) => ({ ...prev, [field.key]: result.value || '' }));
+    setReviewErrors((prev) => ({ ...prev, [field.key]: undefined }));
+    if (!stillHere) return true;
+    setFieldError('');
+    setDraftAnswer(result.value || '');
+    setPhase(PHASE.IDLE);
+    setStatusMessage(`${field.label} saved.`);
+    if (!quiet) addChatMessage('user', `${field.label}: ${result.display || result.value || 'none'}`, describeMethods(result.methods));
+    return true;
+  }, [addChatMessage]);
 
-    const finalValue = validateFieldValue(currentField.key, value);
-    setAnswers((prev) => ({ ...prev, [currentField.key]: finalValue }));
-    addChatMessage('user', finalValue || '(blank)');
-
+  // ── Save Answer ──
+  const saveAnswer = useCallback(async (options = {}) => {
+    const value = draftAnswer.trim();
+    if (!value && !options.advance) return true;  // navigating away from an empty field is fine
+    // Unchanged answer (already checked): nothing to do unless advancing.
+    if (!options.advance && value === String(answers[currentField.key] || '').trim()) return true;
+    const saved = await applyAnswer(currentField, value, { quiet: options.quiet });
+    if (!saved) {
+      if (options.advance) toast.warning(`Please check the ${currentField.label.toLowerCase()}.`);
+      return false;
+    }
     if (options.advance) {
       if (isLastQuestion) {
         setStep('review');
@@ -1456,7 +1687,8 @@ const NewApplication = () => {
         setCurrentFieldIndex((i) => i + 1);
       }
     }
-  }, [draftAnswer, currentField, isLastQuestion, addChatMessage]);
+    return true;
+  }, [draftAnswer, answers, currentField, isLastQuestion, applyAnswer]);
 
   // ── Manual Voice Input (Browser Dictation) ──
   const startBrowserDictation = useCallback(() => {
@@ -1464,13 +1696,15 @@ const NewApplication = () => {
     if (!SpeechRecognition) return false;
 
     const recognition = new SpeechRecognition();
-    const startingAnswer = draftAnswer.trim();
+    const field = currentField;
+    let heardText = '';
     recognition.lang = 'en-US';
     recognition.continuous = false;
     recognition.interimResults = true;
 
     recognition.onstart = () => {
       setVoiceError('');
+      setFieldError('');
       setIsBrowserListening(true);
       setPhase(PHASE.LISTENING);
       setStatusMessage('Listening...');
@@ -1484,11 +1718,8 @@ const NewApplication = () => {
         if (event.results[i].isFinal) finalTranscript += transcript;
         else interimTranscript += transcript;
       }
-      const nextAnswer = [startingAnswer, finalTranscript || interimTranscript].filter(Boolean).join(' ').trim();
-      setDraftAnswer(nextAnswer);
-      if (finalTranscript.trim()) {
-        setAnswers((prev) => ({ ...prev, [currentField.key]: validateFieldValue(currentField.key, nextAnswer) }));
-      }
+      heardText = (finalTranscript || interimTranscript).trim();
+      setDraftAnswer(heardText);
     };
 
     recognition.onerror = (event) => {
@@ -1504,12 +1735,14 @@ const NewApplication = () => {
       recognitionRef.current = null;
       setPhase(PHASE.IDLE);
       setStatusMessage('Ready');
+      // Understand what was heard (DistilBERT + regex) and save it, or show why not.
+      if (heardText) applyAnswer(field, heardText);
     };
 
     recognitionRef.current = recognition;
     recognition.start();
     return true;
-  }, [draftAnswer, currentField.key, setDraftAnswer, setAnswers, setVoiceError, setStatusMessage]);
+  }, [currentField, applyAnswer]);
 
   // ── Media Recorder (Backend Transcription) ──
   const transcribeAnswerRef = useRef(null);
@@ -1581,13 +1814,9 @@ const NewApplication = () => {
         return;
       }
 
-      const finalText = validateFieldValue(currentField.key, text);
-      setDraftAnswer(finalText);
-      setAnswers((prev) => ({ ...prev, [currentField.key]: finalText }));
-      addChatMessage('user', finalText);
-      toast.success(`${currentField.label} captured.`);
-      setPhase(PHASE.IDLE);
-      setStatusMessage(`${currentField.label} captured.`);
+      setDraftAnswer(text);
+      // Whisper gave the words; DistilBERT + regex turn them into the field value.
+      if (await applyAnswer(currentField, text)) toast.success(`${currentField.label} captured.`);
     } catch (error) {
       const message = getApiErrorMessage(error, 'Voice processing failed. You can type the answer instead.');
       setVoiceError(message);
@@ -1597,20 +1826,21 @@ const NewApplication = () => {
     } finally {
       setIsTranscribing(false);
     }
-  }, [currentField, addChatMessage]);
+  }, [currentField, applyAnswer]);
   transcribeAnswerRef.current = transcribeAnswer;
 
   // ── Navigation ──
   const goToField = useCallback((index) => {
-    saveAnswer();
+    if (step === 'interview') saveAnswer({ quiet: true });
     setCurrentFieldIndex(index);
     setStep('interview');
     setStatusMessage(`Let's revisit your ${INTERVIEW_FIELDS[index].label.toLowerCase()}.`);
-  }, [saveAnswer]);
+  }, [saveAnswer, step]);
 
+  // Review-page edits are stored as typed; "Issue CTC" checks and normalizes every field.
   const updateReviewField = useCallback((key, value) => {
-    const finalValue = validateFieldValue(key, value);
-    setAnswers((prev) => ({ ...prev, [key]: finalValue }));
+    setAnswers((prev) => ({ ...prev, [key]: value }));
+    setReviewErrors((prev) => ({ ...prev, [key]: undefined }));
   }, []);
 
   // ── Play Verification ──
@@ -1639,11 +1869,44 @@ const NewApplication = () => {
 
     setIsIssuing(true);
     setPhase(PHASE.ISSUING);
-    setStatusMessage('Issuing your Cedula...');
+    setStatusMessage('Checking every answer...');
     let payload = null;
 
+    // Re-check all answers (manual edits on the review page included) before issuing.
+    let checkedAnswers = latestAnswers;
     try {
-      const formData = buildApplicantData(latestAnswers);
+      const { data } = await extractionAPI.checkAnswers(latestAnswers);
+      if (!data.ok) {
+        const problems = Object.fromEntries(
+          Object.entries(data.results).filter(([, r]) => !r.ok).map(([key, r]) => [key, r.message])
+        );
+        const labels = Object.keys(problems).map((key) => FIELD_MAP[key]?.label || key).join(', ');
+        printWindow?.close?.();
+        setReviewErrors(problems);
+        setIsIssuing(false);
+        setPhase(PHASE.RETRY);
+        setStatusMessage(`Please check: ${labels}`);
+        setStep('review');
+        toast.error(`Please check: ${labels}`);
+        speakText(`Some answers need to be checked: ${labels}. Please look at the screen.`);
+        return;
+      }
+      checkedAnswers = Object.fromEntries(Object.entries(data.results).map(([key, r]) => [key, r.value ?? '']));
+      answersRef.current = checkedAnswers;
+      setAnswers(checkedAnswers);
+      setReviewErrors({});
+    } catch (error) {
+      if (error.response?.status === 401) {
+        printWindow?.close?.();
+        setIsIssuing(false);
+        return;
+      }
+      console.warn('Answer check unavailable; using the basic checks only:', error);
+    }
+    setStatusMessage('Issuing your Cedula...');
+
+    try {
+      const formData = buildApplicantData(checkedAnswers);
       const validationErrors = validateFormData(formData);
       if (validationErrors.length > 0) {
         printWindow?.close?.();
@@ -1726,6 +1989,8 @@ const NewApplication = () => {
     setAnswers({});
     setDraftAnswer('');
     setCtcNumber('');
+    setFieldError('');
+    setReviewErrors({});
     setSurvey({ open: false, transactionId: null, features: [] });
     setAwaitingConfirmation(false);
     setChatHistory([]);
@@ -1794,8 +2059,9 @@ const NewApplication = () => {
             was saved and the PDF was downloaded.
           </p>
           <div className="mt-8 flex flex-wrap justify-center gap-3">
-            <button onClick={() => navigate('/dashboard')} className="btn-secondary inline-flex items-center gap-2">
-              <FaArrowLeft /> Dashboard
+            {/* Records: the Dashboard is admin-only, so staff were bounced back here. */}
+            <button onClick={() => navigate('/records')} className="btn-secondary inline-flex items-center gap-2">
+              <FaArrowLeft /> Records
             </button>
             <button
               onClick={() => printIssuedCtc(ctcNumber)}
@@ -1841,7 +2107,7 @@ const NewApplication = () => {
               className="bg-white border border-gray-200 rounded-xl shadow-sm p-4 space-y-4 max-h-[400px] overflow-y-auto"
             >
               {chatHistory.map((msg, i) => (
-                <ChatBubble key={msg.id} role={msg.role} text={msg.text} isLatest={i === chatHistory.length - 1} />
+                <ChatBubble key={msg.id} role={msg.role} text={msg.text} meta={msg.meta} isLatest={i === chatHistory.length - 1} />
               ))}
             </div>
           )}
@@ -1949,6 +2215,7 @@ const NewApplication = () => {
                 updateReviewField(field.key, value);
               }}
               onAskAgain={() => goToField(index)}
+              error={reviewErrors[field.key]}
             />
           ))}
         </div>
@@ -2024,7 +2291,7 @@ const NewApplication = () => {
             className="bg-white border border-gray-200 rounded-xl shadow-sm p-4 space-y-4 max-h-[320px] overflow-y-auto"
           >
             {chatHistory.map((msg, i) => (
-              <ChatBubble key={msg.id} role={msg.role} text={msg.text} isLatest={i === chatHistory.length - 1} />
+              <ChatBubble key={msg.id} role={msg.role} text={msg.text} meta={msg.meta} isLatest={i === chatHistory.length - 1} />
             ))}
             {phase === PHASE.THINKING && (
               <div className="flex gap-3">
@@ -2092,13 +2359,20 @@ const NewApplication = () => {
               onChange={(e) => {
                 setInputMethod('manual');
                 setDraftAnswer(e.target.value);
+                if (fieldError) setFieldError('');
               }}
               rows={4}
               placeholder={currentField.hint}
-              className="input-field resize-none text-base w-full"
+              className={`input-field resize-none text-base w-full ${fieldError ? '!border-rose-400' : ''}`}
               aria-label={`Answer for ${currentField.label}`}
+              aria-invalid={Boolean(fieldError)}
               disabled={isConversationActive}
             />
+            {fieldError && (
+              <p className="mt-2 text-sm font-medium text-rose-700 flex items-start gap-1.5" role="alert">
+                <FaExclamationTriangle className="shrink-0 mt-0.5" size={13} /> {fieldError}
+              </p>
+            )}
 
             {/* Action Bar */}
             <div className="mt-4 flex flex-wrap items-center justify-between gap-3">
@@ -2139,17 +2413,17 @@ const NewApplication = () => {
 
               <button
                 onClick={() => saveAnswer({ advance: true })}
-                disabled={isConversationActive || isRecording || isBrowserListening || isTranscribing}
+                disabled={isConversationActive || isRecording || isBrowserListening || isTranscribing || isChecking}
                 className="btn-primary inline-flex items-center gap-2 disabled:opacity-50"
               >
-                Save & Continue <FaArrowRight />
+                {isChecking ? 'Checking...' : 'Save & Continue'} <FaArrowRight />
               </button>
             </div>
 
             <p className="mt-2 text-xs text-gray-500 inline-flex items-center gap-1.5">
               <FaCommentDots className="text-gray-400" size={12} />
-              Press <strong>Start Conversation</strong> and the assistant will ask every question, check name
-              spelling, read back the full summary once, and confirm before issuing.
+              Press <strong>Start Conversation</strong> and the assistant will ask every question, check each
+              answer, confirm name spelling, read back the full summary once, and confirm before issuing.
               <span className="hidden sm:inline"> Shortcut: Ctrl+Enter to save.</span>
             </p>
 
@@ -2164,13 +2438,19 @@ const NewApplication = () => {
 
         {/* Navigation Footer */}
         <div className="flex flex-wrap justify-between gap-3">
-          <button onClick={() => navigate('/dashboard')} className="btn-secondary inline-flex items-center gap-2">
-            <FaArrowLeft /> Cancel
+          <button
+            onClick={() => {
+              if (isConversationActive) stopConversation();
+              resetInterview();
+            }}
+            className="btn-secondary inline-flex items-center gap-2"
+          >
+            <FaArrowLeft /> Start Over
           </button>
           <div className="flex flex-wrap gap-3">
             <button
               onClick={() => {
-                saveAnswer();
+                saveAnswer({ quiet: true });
                 setCurrentFieldIndex((i) => Math.max(0, i - 1));
               }}
               disabled={currentFieldIndex === 0}
@@ -2180,7 +2460,7 @@ const NewApplication = () => {
             </button>
             <button
               onClick={() => {
-                saveAnswer();
+                saveAnswer({ quiet: true });
                 setStep('review');
               }}
               className="btn-success inline-flex items-center gap-2"
