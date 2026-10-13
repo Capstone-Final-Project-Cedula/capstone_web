@@ -418,7 +418,14 @@ const interpretAnswer = async (key, text) => {
   }
 };
 
-const METHOD_LABELS = { distilbert: 'DistilBERT', regex: 'regex', gazetteer: 'gazetteer', local: 'offline check' };
+const METHOD_LABELS = { distilbert: 'DistilBERT', regex: 'regex', gazetteer: 'fuzzy matching', local: 'offline check' };
+
+// Which speech-to-text engine heard an answer (shown under the applicant's chat bubble).
+const describeEngine = (meta = {}) => {
+  if (meta.engine === 'whisper') return `Heard by Whisper${meta.seconds ? ` (${meta.seconds} s)` : ''}`;
+  if (meta.engine === 'browser') return 'Heard by browser speech recognition';
+  return '';
+};
 const describeMethods = (methods = [], verb = 'Understood') =>
   methods.length ? `${verb} with ${methods.map((m) => METHOD_LABELS[m] || m).join(' + ')}` : '';
 
@@ -887,6 +894,183 @@ function useBrowserSpeechRecognition() {
   return { isListening, listenOnce, stopListening };
 }
 
+// Voice activity detection for one answer (milliseconds).
+const VAD = {
+  cueMs: 140,         // short beep, then start listening
+  calibrateMs: 300,   // measure the room's background noise first
+  silenceMs: 800,     // this much quiet after speaking ends the answer
+  noSpeechMs: 7000,   // nobody spoke at all
+  maxMs: 15000,       // longest answer (long addresses)
+  minSpeechMs: 150,   // shorter than this is a click or a cough, not an answer
+  tickMs: 40,
+};
+
+const isWhisperCaptureSupported = () =>
+  Boolean(navigator.mediaDevices?.getUserMedia && window.MediaRecorder && (window.AudioContext || window.webkitAudioContext));
+
+/**
+ * Hook: useWhisperListener
+ * The speech-to-text step of the live interview, as described in the paper:
+ * records ONE spoken answer, stops by itself when the speaker pauses, and has
+ * Whisper (backend /speech/transcribe) transcribe it with a hint for that
+ * question. Same interface as the browser listener: listenOnce({ fieldKey,
+ * onStart, onTranscribing, onEnd(text, meta), onError }).
+ */
+function useWhisperListener() {
+  const [isListening, setIsListening] = useState(false);
+  const streamRef = useRef(null);
+  const ctxRef = useRef(null);
+  const activeRef = useRef(null);
+
+  const getStream = useCallback(async () => {
+    if (streamRef.current?.getAudioTracks().some((t) => t.readyState === 'live')) return streamRef.current;
+    streamRef.current = await navigator.mediaDevices.getUserMedia({
+      audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true, channelCount: 1 },
+    });
+    return streamRef.current;
+  }, []);
+
+  const getContext = useCallback(async () => {
+    if (!ctxRef.current) {
+      const AudioContext = window.AudioContext || window.webkitAudioContext;
+      ctxRef.current = new AudioContext();
+    }
+    if (ctxRef.current.state === 'suspended') await ctxRef.current.resume().catch(() => {});
+    return ctxRef.current;
+  }, []);
+
+  // Ask for the microphone once, at the start of the conversation.
+  const prepare = useCallback(async () => {
+    await getStream();
+    await getContext();
+  }, [getStream, getContext]);
+
+  const stopListening = useCallback(() => activeRef.current?.cancel(), []);
+
+  const releaseMicrophone = useCallback(() => {
+    activeRef.current?.cancel();
+    streamRef.current?.getTracks().forEach((t) => t.stop());
+    streamRef.current = null;
+  }, []);
+
+  const playCue = (ctx) => {
+    try {
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.frequency.value = 880;
+      gain.gain.setValueAtTime(0.08, ctx.currentTime);
+      gain.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + 0.09);
+      osc.connect(gain).connect(ctx.destination);
+      osc.start();
+      osc.stop(ctx.currentTime + 0.1);
+    } catch { /* no cue is fine */ }
+  };
+
+  const listenOnce = useCallback(async ({ fieldKey, onStart, onTranscribing, onEnd, onError }) => {
+    let stream;
+    let ctx;
+    try {
+      stream = await getStream();
+      ctx = await getContext();
+    } catch {
+      onError?.('mic-blocked');
+      onEnd?.('', { error: 'mic-blocked' });
+      return;
+    }
+
+    playCue(ctx);
+    await new Promise((r) => setTimeout(r, VAD.cueMs));
+
+    const source = ctx.createMediaStreamSource(stream);
+    const analyser = ctx.createAnalyser();
+    analyser.fftSize = 1024;
+    source.connect(analyser);
+    const buffer = new Float32Array(analyser.fftSize);
+    const level = () => {
+      analyser.getFloatTimeDomainData(buffer);
+      let sum = 0;
+      for (let i = 0; i < buffer.length; i++) sum += buffer[i] * buffer[i];
+      return Math.sqrt(sum / buffer.length);
+    };
+
+    const mimeType = ['audio/webm;codecs=opus', 'audio/webm', 'audio/ogg;codecs=opus']
+      .find((t) => MediaRecorder.isTypeSupported(t)) || '';
+    const recorder = new MediaRecorder(stream, mimeType ? { mimeType } : undefined);
+    const chunks = [];
+    recorder.ondataavailable = (e) => { if (e.data.size > 0) chunks.push(e.data); };
+
+    let cancelled = false;
+    let speechStart = 0;
+    let lastVoice = 0;
+    let noise = 0;
+    let noiseSamples = 0;
+    const started = performance.now();
+
+    const finish = () => {
+      clearInterval(timer);
+      try { source.disconnect(); } catch { /* already disconnected */ }
+      if (recorder.state !== 'inactive') recorder.stop();
+    };
+    const timer = setInterval(() => {
+      const now = performance.now();
+      const elapsed = now - started;
+      const current = level();
+      if (elapsed < VAD.calibrateMs) {
+        noise += current;
+        noiseSamples += 1;
+        return;
+      }
+      const threshold = Math.max(0.012, (noise / Math.max(noiseSamples, 1)) * 2.5);
+      if (current > threshold) {
+        if (!speechStart) speechStart = now;
+        lastVoice = now;
+      }
+      if (speechStart && now - lastVoice > VAD.silenceMs) finish();
+      else if (!speechStart && elapsed > VAD.noSpeechMs) finish();
+      else if (elapsed > VAD.maxMs) finish();
+    }, VAD.tickMs);
+
+    activeRef.current = { cancel: () => { cancelled = true; finish(); } };
+
+    recorder.onstop = async () => {
+      activeRef.current = null;
+      setIsListening(false);
+      if (cancelled) return;
+      if (!speechStart || lastVoice - speechStart < VAD.minSpeechMs) {
+        onEnd?.('', { engine: 'whisper', reason: 'no-speech' });
+        return;
+      }
+      onTranscribing?.();
+      try {
+        const wav = await convertRecordingToWav(new Blob(chunks, { type: mimeType || 'audio/webm' }));
+        const file = new File([wav], 'answer.wav', { type: 'audio/wav' });
+        const t0 = performance.now();
+        const { data } = await speechAPI.transcribe(file, fieldKey, { timeout: 20000 });
+        onEnd?.((data.transcript || '').trim(), {
+          engine: 'whisper',
+          seconds: Math.round((performance.now() - t0) / 100) / 10,
+        });
+      } catch (error) {
+        if (error.response?.status === 401) return;            // login expired: client redirects
+        if (error.response?.status === 422) {                   // Whisper heard no speech
+          onEnd?.('', { engine: 'whisper', reason: 'no-speech' });
+          return;
+        }
+        onError?.('whisper-failed');
+        onEnd?.('', { engine: 'whisper', error: 'whisper-failed' });
+      }
+    };
+
+    recorder.start(250);
+    setIsListening(true);
+    onStart?.();
+  }, [getStream, getContext]);
+
+  useEffect(() => () => releaseMicrophone(), [releaseMicrophone]);
+
+  return { isListening, listenOnce, stopListening, prepare, releaseMicrophone };
+}
+
 /**
  * Hook: useConversationEngine
  * Orchestrates the full hands-free voice interview flow.
@@ -907,13 +1091,51 @@ function useConversationEngine({
   issueForm,
 }) {
   const { isSpeaking, speak: rawSpeak, cancel: cancelSpeech } = useSpeechSynthesis();
-  const { isListening, listenOnce, stopListening: stopBrowserListening } = useBrowserSpeechRecognition();
+  const browser = useBrowserSpeechRecognition();
+  const whisper = useWhisperListener();
   const [isConversationActive, setIsConversationActive] = useState(false);
+  const isListening = whisper.isListening || browser.isListening;
+
+  // Speech-to-text engine: Whisper (as in the paper). The browser's own recognition
+  // is only a backup if the Whisper server fails twice in a row.
+  const engineRef = useRef('whisper');
+  const whisperFailuresRef = useRef(0);
+  const stopBrowserListening = useCallback(() => {
+    whisper.stopListening();
+    browser.stopListening();
+  }, [whisper, browser]);
+
+  // One listening turn with the active engine. onEnd(text, meta) — meta.engine says who heard it.
+  const listenOnce = useCallback((opts) => {
+    if (engineRef.current === 'browser') {
+      browser.listenOnce({ ...opts, onEnd: (text) => opts.onEnd?.(text, { engine: 'browser' }) });
+      return;
+    }
+    whisper.listenOnce({
+      ...opts,
+      onTranscribing: () => {
+        setPhase(PHASE.THINKING);
+        setStatusMessage('Whisper is transcribing your answer...');
+        opts.onTranscribing?.();
+      },
+      onEnd: (text, meta) => {
+        if (meta?.error === 'whisper-failed') {
+          whisperFailuresRef.current += 1;
+          if (whisperFailuresRef.current >= 2 && isSpeechSupported()) {
+            engineRef.current = 'browser';
+            setVoiceError('The Whisper server is not responding, so the browser speech recognition is being used for now.');
+          }
+        } else if (!meta?.error) {
+          whisperFailuresRef.current = 0;
+        }
+        opts.onEnd?.(text, meta);
+      },
+    });
+  }, [whisper, browser, setPhase, setStatusMessage, setVoiceError]);
 
   const answersRef = useRef(answers);
   const currentFieldIndexRef = useRef(currentFieldIndex);
   const conversationActiveRef = useRef(false);
-  const capturedSpeechRef = useRef('');
 
   useEffect(() => { answersRef.current = answers; }, [answers]);
   useEffect(() => { currentFieldIndexRef.current = currentFieldIndex; }, [currentFieldIndex]);
@@ -931,7 +1153,8 @@ function useConversationEngine({
     setStatusMessage('Conversation paused');
     cancelSpeech();
     stopBrowserListening();
-  }, [cancelSpeech, stopBrowserListening, setStatusMessage, setPhase]);
+    whisper.releaseMicrophone();
+  }, [cancelSpeech, stopBrowserListening, whisper, setStatusMessage, setPhase]);
 
   const moveToNextQuestion = useCallback(() => {
     const index = currentFieldIndexRef.current;
@@ -982,60 +1205,39 @@ function useConversationEngine({
     speak(field.question, () => listenForAnswer(fieldIndex));
   }, [speak, setCurrentFieldIndex, setDraftAnswer, setAwaitingConfirmation, setStatusMessage, setPhase, addChatMessage]);
 
+  // Whisper -> (handleSpokenAnswer) DistilBERT + Regex -> voice read-back.
   const listenForAnswer = useCallback((fieldIndex) => {
     if (!conversationActiveRef.current) return;
-    const SpeechRecognition = getSpeechRecognition();
-    if (!SpeechRecognition) {
-      setVoiceError('Browser voice conversation is not supported here. Please type the answer or use Chrome or Edge.');
-      setIsConversationActive(false);
-      conversationActiveRef.current = false;
-      setPhase(PHASE.IDLE);
-      return;
-    }
-
-    const recognition = new SpeechRecognition();
-    capturedSpeechRef.current = '';
-    recognition.lang = 'en-US';
-    recognition.continuous = false;
-    recognition.interimResults = true;
-
-    recognition.onstart = () => {
-      setVoiceError('');
-      setPhase(PHASE.LISTENING);
-      setStatusMessage('Listening for your answer...');
-    };
-
-    recognition.onresult = (event) => {
-      let finalTranscript = '';
-      let interimTranscript = '';
-      for (let i = event.resultIndex; i < event.results.length; i++) {
-        const transcript = event.results[i][0].transcript;
-        if (event.results[i].isFinal) finalTranscript += transcript;
-        else interimTranscript += transcript;
-      }
-      const heard = (finalTranscript || interimTranscript).trim();
-      if (heard) {
-        capturedSpeechRef.current = heard;
-        setDraftAnswer(heard);
-      }
-    };
-
-    recognition.onerror = (event) => {
-      const msg = event.error === 'no-speech'
-        ? "I didn't catch that. Let me ask again."
-        : `Voice recognition had a hiccup: ${event.error}. Please type if it keeps happening.`;
-      setVoiceError(msg);
-    };
-
-    recognition.onend = () => {
-      if (!conversationActiveRef.current) return;
-      setPhase(PHASE.THINKING);
-      const transcript = capturedSpeechRef.current.trim();
-      handleSpokenAnswer(fieldIndex, transcript);
-    };
-
-    recognition.start();
-  }, [setDraftAnswer, setVoiceError, setStatusMessage, setPhase]);
+    const field = INTERVIEW_FIELDS[fieldIndex];
+    listenOnce({
+      fieldKey: field.key,   // Whisper gets a hint for this question (e.g. Baungon barangays)
+      onStart: () => {
+        setVoiceError('');
+        setPhase(PHASE.LISTENING);
+        setStatusMessage('Listening for your answer...');
+      },
+      onEnd: (heard, meta = {}) => {
+        if (!conversationActiveRef.current) return;
+        if (meta.error === 'mic-blocked') {
+          setVoiceError('The microphone is blocked. Allow microphone access in the browser, or type the answers.');
+          setIsConversationActive(false);
+          conversationActiveRef.current = false;
+          setPhase(PHASE.IDLE);
+          return;
+        }
+        if (meta.error) {
+          if (countAttempt(fieldIndex) >= MAX_ATTEMPTS) {
+            giveUpOnField(fieldIndex);
+            return;
+          }
+          speak("Sorry, I had trouble hearing that. Please say it again.", () => listenForAnswer(fieldIndex));
+          return;
+        }
+        if (heard) setDraftAnswer(heard);
+        handleSpokenAnswer(fieldIndex, heard, meta);
+      },
+    });
+  }, [listenOnce, speak, setDraftAnswer, setVoiceError, setStatusMessage, setPhase]);
 
   // Save a value the applicant gave and move on (or check the spelling of a name first).
   const acceptAnswer = useCallback((fieldIndex, result) => {
@@ -1045,11 +1247,10 @@ function useConversationEngine({
     addChatMessage('assistant', `${field.label}: ${result.display || result.value || 'none'}`, describeMethods(result.methods));
 
     if (field.requiresSpellingCheck && result.value) {
+      const prompt = `I heard ${result.value}. Is the spelling correct? Say yes, or spell your ${field.label.toLowerCase()} letter by letter.`;
       setStatusMessage(`I heard "${result.value}". Checking the spelling...`);
-      speak(
-        `I heard ${result.value}. Is the spelling correct? Say yes, or spell your ${field.label.toLowerCase()} letter by letter.`,
-        () => listenForSpelling(fieldIndex, result.value)
-      );
+      addChatMessage('assistant', prompt);
+      speak(prompt, () => listenForSpelling(fieldIndex, result.value));
       return;
     }
 
@@ -1071,7 +1272,7 @@ function useConversationEngine({
     speak(msg, moveToNextQuestion);
   }, [speak, moveToNextQuestion, addChatMessage]);
 
-  const handleSpokenAnswer = useCallback(async (fieldIndex, transcript) => {
+  const handleSpokenAnswer = useCallback(async (fieldIndex, transcript, heardBy = {}) => {
     const field = INTERVIEW_FIELDS[fieldIndex];
     const spokenValue = transcript.trim();
 
@@ -1086,7 +1287,7 @@ function useConversationEngine({
       return;
     }
 
-    if (spokenValue) addChatMessage('user', spokenValue);
+    if (spokenValue) addChatMessage('user', spokenValue, describeEngine(heardBy));
     setPhase(PHASE.THINKING);
     setStatusMessage('Understanding your answer...');
 
@@ -1125,6 +1326,7 @@ function useConversationEngine({
   // "I heard Nails. Is that the place where you were born?" -> yes / no / a new answer.
   const listenForConfirmation = useCallback((fieldIndex, result) => {
     listenOnce({
+      fieldKey: 'confirm',   // Whisper hint
       onStart: () => {
         setPhase(PHASE.LISTENING);
         setStatusMessage('Listening for yes or no...');
@@ -1158,6 +1360,7 @@ function useConversationEngine({
     };
 
     listenOnce({
+      fieldKey: 'spelling',   // Whisper hint
       onStart: () => {
         setPhase(PHASE.LISTENING);
         setStatusMessage('Listening: say yes, or spell it letter by letter...');
@@ -1197,20 +1400,39 @@ function useConversationEngine({
           );
           return;
         }
-        addChatMessage('assistant', `${field.label}: ${result.value}`, describeMethods(result.methods));
-        speak(`I have ${result.value}. Is that correct? Say yes, or spell it again.`, () =>
-          listenForSpelling(fieldIndex, result.value)
-        );
+        // They repeated the same name instead of saying yes: that is a yes. Keep the first
+        // version ("Dela Cruz", not "Delacruz" written under the spelling hint).
+        const squash = (v) => String(v || '').toLowerCase().replace(/[^a-zñ]/g, '');
+        if (squash(result.value) === squash(baseAnswer)) {
+          goNext(baseAnswer);
+          return;
+        }
+        const confirmPrompt = `I have ${result.value}. Is that correct? Say yes, or spell it again.`;
+        addChatMessage('assistant', confirmPrompt, describeMethods(result.methods));
+        speak(confirmPrompt, () => listenForSpelling(fieldIndex, result.value));
       },
     });
   }, [listenOnce, saveSpokenAnswer, moveToNextQuestion, setStatusMessage, setPhase, speak, addChatMessage]);
 
-  const startConversation = useCallback(() => {
-    if (!isSpeechSupported()) {
-      setVoiceError('Hands-free conversation needs Chrome or Edge browser speech recognition. You can still type answers manually.');
+  const startConversation = useCallback(async () => {
+    if (isWhisperCaptureSupported()) {
+      try {
+        await whisper.prepare();   // ask for the microphone once, before the greeting
+        engineRef.current = 'whisper';
+        whisperFailuresRef.current = 0;
+      } catch {
+        setVoiceError('The microphone is blocked. Allow microphone access for this site (the lock icon in the address bar), or type the answers.');
+        toast.error('Microphone access is needed for the voice interview.');
+        return;
+      }
+    } else if (isSpeechSupported()) {
+      engineRef.current = 'browser';
+    } else {
+      setVoiceError('This browser cannot record audio. Please use Chrome or Edge, or type the answers.');
       toast.error('Voice conversation is not supported in this browser.');
       return;
     }
+    setVoiceError('');
     setIsConversationActive(true);
     conversationActiveRef.current = true;
 
@@ -1254,6 +1476,7 @@ function useConversationEngine({
     if (!conversationActiveRef.current) return;
 
     listenOnce({
+      fieldKey: 'review',   // Whisper hint
       onStart: () => {
         setVoiceError('');
         setPhase(PHASE.LISTENING);
@@ -1342,6 +1565,7 @@ function useConversationEngine({
 
   const listenForIssueConfirmation = useCallback(() => {
     listenOnce({
+      fieldKey: 'confirm',   // Whisper hint
       onStart: () => {
         setVoiceError('');
         setPhase(PHASE.LISTENING);
@@ -1780,9 +2004,14 @@ const NewApplication = () => {
     }
   }, []);
 
+  // "Answer by Voice": record and let Whisper transcribe (as in the paper);
+  // browser dictation only where the browser cannot record audio.
   const startVoiceAnswer = useCallback(() => {
-    if (startBrowserDictation()) return;
-    startRecording();
+    if (window.MediaRecorder && navigator.mediaDevices?.getUserMedia) {
+      startRecording();
+      return;
+    }
+    startBrowserDictation();
   }, [startBrowserDictation, startRecording]);
 
   const stopVoiceInput = useCallback(() => {
@@ -1800,7 +2029,7 @@ const NewApplication = () => {
   const transcribeAnswer = useCallback(async (blob) => {
     setIsTranscribing(true);
     setPhase(PHASE.THINKING);
-    setStatusMessage('Processing your answer...');
+    setStatusMessage('Whisper is transcribing your answer...');
     try {
       const wavBlob = await convertRecordingToWav(blob);
       const file = new File([wavBlob], 'answer.wav', { type: 'audio/wav' });
@@ -2408,7 +2637,7 @@ const NewApplication = () => {
                     Recording...
                   </span>
                 )}
-                {isTranscribing && <ThinkingDots label="Processing your answer..." />}
+                {isTranscribing && <ThinkingDots label="Whisper is transcribing..." />}
               </div>
 
               <button
