@@ -26,6 +26,7 @@ import { getApiErrorMessage } from '../api/errors';
 import LoadingSpinner from '../components/common/LoadingSpinner';
 import SusSurveyDialog from '../components/sus/SusSurveyDialog';
 import ConsentNotice from '../components/interview/ConsentNotice';
+import { applySpelling, looksSpelled, spellOut, titleCaseSpelled } from '../utils/spelling';
 
 // ═══════════════════════════════════════════════════════════════
 // SECTION 1: Constants & Configuration
@@ -142,8 +143,9 @@ const getConversationGreeting = () =>
 const REVIEW_PROMPT =
   'Please check your details on the screen. If everything is correct, say yes. To change something, say for example: change occupation to teacher.';
 
-// Name questions: confirmed together once ("I have your name as ..."), not one by one.
-const NAME_KEYS = ['given_name', 'middle_name', 'surname'];
+// Answers that can be spelled letter by letter when they were heard wrong.
+// (Dates, numbers and choices are simply asked again instead.)
+const SPELLABLE_KEYS = new Set(['surname', 'given_name', 'middle_name', 'place_of_birth', 'occupation', 'citizenship']);
 
 const isFilipino = (answers) => /^filipino$/i.test(String(answers?.citizenship || '').trim());
 
@@ -991,7 +993,8 @@ function useWhisperListener() {
     } catch { /* no cue is fine */ }
   };
 
-  const listenOnce = useCallback(async ({ fieldKey, onStart, onTranscribing, onEnd, onError }) => {
+  const listenOnce = useCallback(async ({ fieldKey, onStart, onTranscribing, onEnd, onError, vad }) => {
+    const cfg = { ...VAD, ...(vad || {}) };   // e.g. spelling allows longer pauses between letters
     let stream;
     let ctx;
     try {
@@ -1004,7 +1007,7 @@ function useWhisperListener() {
     }
 
     playCue(ctx);
-    await new Promise((r) => setTimeout(r, VAD.cueMs));
+    await new Promise((r) => setTimeout(r, cfg.cueMs));
 
     const source = ctx.createMediaStreamSource(stream);
     const analyser = ctx.createAnalyser();
@@ -1040,7 +1043,7 @@ function useWhisperListener() {
       const now = performance.now();
       const elapsed = now - started;
       const current = level();
-      if (elapsed < VAD.calibrateMs) {
+      if (elapsed < cfg.calibrateMs) {
         noise += current;
         noiseSamples += 1;
         return;
@@ -1050,10 +1053,10 @@ function useWhisperListener() {
         if (!speechStart) speechStart = now;
         lastVoice = now;
       }
-      if (speechStart && now - lastVoice > VAD.silenceMs) finish();
-      else if (!speechStart && elapsed > VAD.noSpeechMs) finish();
-      else if (elapsed > VAD.maxMs) finish();
-    }, VAD.tickMs);
+      if (speechStart && now - lastVoice > cfg.silenceMs) finish();
+      else if (!speechStart && elapsed > cfg.noSpeechMs) finish();
+      else if (elapsed > cfg.maxMs) finish();
+    }, cfg.tickMs);
 
     activeRef.current = { cancel: () => { cancelled = true; finish(); } };
 
@@ -1061,7 +1064,7 @@ function useWhisperListener() {
       activeRef.current = null;
       setIsListening(false);
       if (cancelled) return;
-      if (!speechStart || lastVoice - speechStart < VAD.minSpeechMs) {
+      if (!speechStart || lastVoice - speechStart < cfg.minSpeechMs) {
         onEnd?.('', { engine: 'whisper', reason: 'no-speech' });
         return;
       }
@@ -1268,30 +1271,15 @@ function useConversationEngine({
     });
   }, [listenOnce, speak, setDraftAnswer, setVoiceError, setStatusMessage, setPhase]);
 
-  // After a name was asked again from the name check, come back to the name check.
-  const returnToNameCheckRef = useRef(false);
-
-  // Save a value the applicant gave and move on. No filler phrases between questions;
-  // only values the system converted are read back, so a misheard date or number is caught early.
+  // Save a confirmed answer and go to the next question.
   const acceptAnswer = useCallback((fieldIndex, result) => {
     const field = INTERVIEW_FIELDS[fieldIndex];
     attemptsRef.current[fieldIndex] = 0;
     saveSpokenAnswer(fieldIndex, result.value || '');
     addChatMessage('assistant', `${field.label}: ${result.display || result.value || 'none'}`, describeMethods(result.methods));
-
-    if (NAME_KEYS.includes(field.key) && (returnToNameCheckRef.current || field.key === 'middle_name')) {
-      returnToNameCheckRef.current = false;
-      startNameCheck();
-      return;
-    }
-
-    const readBack = ['date', 'height', 'weight', 'gross_annual_income'].includes(field.key) && result.display
-      ? `I got ${result.display}.`
-      : '';
     setStatusMessage('Next question...');
-    if (readBack) speak(readBack, moveToNextQuestion);
-    else moveToNextQuestion();
-  }, [speak, saveSpokenAnswer, moveToNextQuestion, setStatusMessage, addChatMessage]);
+    moveToNextQuestion();
+  }, [saveSpokenAnswer, moveToNextQuestion, setStatusMessage, addChatMessage]);
 
   // Too many unusable answers: leave the field blank for the review step instead of looping forever.
   const giveUpOnField = useCallback((fieldIndex) => {
@@ -1299,91 +1287,159 @@ function useConversationEngine({
     attemptsRef.current[fieldIndex] = 0;
     const msg = `Let's skip your ${field.label.toLowerCase()} for now. The staff can fill it in at the review.`;
     addChatMessage('assistant', msg);
-    if (NAME_KEYS.includes(field.key) && (returnToNameCheckRef.current || field.key === 'middle_name')) {
-      returnToNameCheckRef.current = false;
-      speak(msg, () => startNameCheck());
-      return;
-    }
     speak(msg, moveToNextQuestion);
   }, [speak, moveToNextQuestion, addChatMessage]);
 
-  // ── One name check instead of a spelling check after every name ──
-  const nameCheckAttemptsRef = useRef(0);
-  const continueAfterNames = useCallback(() => {
-    nameCheckAttemptsRef.current = 0;
-    currentFieldIndexRef.current = INTERVIEW_FIELDS.findIndex((f) => f.key === 'middle_name');
-    moveToNextQuestion();
-  }, [moveToNextQuestion]);
+  // ── Every answer is confirmed: "Dela Cruz. Is that correct?" ──
+  // Speech recognition will sometimes get an answer wrong (local names especially), so
+  // nothing is saved until the applicant says yes. "No" leads to spelling letter by
+  // letter for names and places, or to asking the question again for the rest.
+  const confirmAnswer = useCallback((fieldIndex, result, { spelled = '' } = {}) => {
+    const shown = result.display || result.value;
+    let prompt;
+    if (spelled) prompt = `I have ${spellOut(spelled)}. ${result.value}. Is that correct?`;
+    else if (result.needs_confirmation && result.message) prompt = result.message;  // "I heard Nails. Is that the place where you were born?"
+    else prompt = `${shown}. Is that correct?`;
+    setDraftAnswer(result.value || '');
+    setPhase(PHASE.CONFIRMING);
+    setStatusMessage('Say yes if it is correct, or no to fix it.');
+    addChatMessage('assistant', prompt, describeMethods(result.methods));
+    speak(prompt, () => listenForConfirmation(fieldIndex, result));
+  }, [speak, setDraftAnswer, setPhase, setStatusMessage, addChatMessage]);
 
-  const startNameCheck = useCallback(() => {
-    const a = answersRef.current;
-    const fullName = [a.given_name, a.middle_name, a.surname].filter((v) => String(v || '').trim()).join(' ');
-    if (!fullName) {
-      continueAfterNames();
+  // The answer was wrong: spell it (names, places) or ask again (dates, numbers, choices).
+  const fixAnswer = useCallback((fieldIndex) => {
+    const field = INTERVIEW_FIELDS[fieldIndex];
+    if (countAttempt(fieldIndex) >= MAX_ATTEMPTS + 1) {
+      giveUpOnField(fieldIndex);
       return;
     }
-    const prompt = `I have your name as ${fullName}. Is that correct? Say yes, or tell me which name to fix.`;
-    setPhase(PHASE.CONFIRMING);
-    setStatusMessage('Checking your name...');
-    addChatMessage('assistant', prompt);
-    speak(prompt, () => listenForNameCheck());
-  }, [speak, continueAfterNames, setPhase, setStatusMessage, addChatMessage]);
+    if (SPELLABLE_KEYS.has(field.key)) {
+      startSpelling(fieldIndex);
+      return;
+    }
+    const msg = `Okay. Please say your ${field.label.toLowerCase().replace(/\s*\(.*\)/, '')} again.`;
+    addChatMessage('assistant', msg);
+    speak(msg, () => listenForAnswer(fieldIndex));
+  }, [speak, giveUpOnField, addChatMessage]);
 
-  const listenForNameCheck = useCallback(() => {
+  const listenForConfirmation = useCallback((fieldIndex, result, silentTries = 0) => {
     listenOnce({
-      fieldKey: 'review',   // Whisper hint: "yes" or "change surname to ..."
+      fieldKey: 'confirm',             // Whisper hint: yes / no / opo / hindi
+      vad: { noSpeechMs: 5000 },
       onStart: () => {
         setPhase(PHASE.LISTENING);
-        setStatusMessage('Say yes, or which name to fix...');
+        setStatusMessage('Listening for yes or no...');
       },
       onError: () => {},
-      onEnd: async (heard, meta = {}) => {
+      onEnd: (heard, meta = {}) => {
         if (!conversationActiveRef.current) return;
         const reply = heard.trim();
-        if (reply) addChatMessage('user', reply, describeEngine(meta));
         if (!reply) {
-          nameCheckAttemptsRef.current += 1;
-          if (nameCheckAttemptsRef.current >= MAX_ATTEMPTS) { continueAfterNames(); return; }
-          speak('Please say yes if your name is correct.', () => listenForNameCheck());
-          return;
-        }
-        if (isYesAnswer(reply)) {
-          continueAfterNames();
-          return;
-        }
-
-        // "change surname to Cruz" -> fix it directly and check the name again.
-        const corrections = parseVoiceCorrections(reply).filter((c) => NAME_KEYS.includes(c.key));
-        if (corrections.length) {
-          let checked;
-          try {
-            checked = await Promise.all(corrections.map(async (c) => ({ ...c, result: await interpretAnswer(c.key, c.value) })));
-          } catch {
+          if (silentTries >= 1) {
+            // Still no reply: keep the answer; it is shown on screen and checked again at the review.
+            acceptAnswer(fieldIndex, result);
             return;
           }
-          checked.filter((c) => c.result.ok).forEach((c) => {
-            saveSpokenAnswer(INTERVIEW_FIELDS.findIndex((f) => f.key === c.key), c.result.value || '');
-          });
-          startNameCheck();
+          speak('Please say yes or no.', () => listenForConfirmation(fieldIndex, result, silentTries + 1));
           return;
         }
-
-        // "the surname" / "last name" -> ask that question again, then come back here.
-        const text = reply.toLowerCase();
-        const which = /sur ?name|last name|family name|apelyido/.test(text) ? 'surname'
-          : /middle/.test(text) ? 'middle_name'
-            : /given|first name|pangalan/.test(text) ? 'given_name' : null;
-        nameCheckAttemptsRef.current += 1;
-        if (which) {
-          returnToNameCheckRef.current = true;
-          askQuestion(INTERVIEW_FIELDS.findIndex((f) => f.key === which));
-          return;
+        addChatMessage('user', reply, describeEngine(meta));
+        if (isYesAnswer(reply)) {
+          acceptAnswer(fieldIndex, result);
+        } else if (isNoAnswer(reply)) {
+          fixAnswer(fieldIndex);
+        } else if (SPELLABLE_KEYS.has(INTERVIEW_FIELDS[fieldIndex].key) && looksSpelled(reply)) {
+          startSpelling(fieldIndex, reply);           // they went straight to spelling it
+        } else {
+          handleSpokenAnswer(fieldIndex, reply, meta); // they simply said the right answer
         }
-        if (nameCheckAttemptsRef.current >= MAX_ATTEMPTS) { continueAfterNames(); return; }
-        speak('Which name should I fix: your surname, given name, or middle name?', () => listenForNameCheck());
       },
     });
-  }, [listenOnce, speak, askQuestion, saveSpokenAnswer, continueAfterNames, setPhase, setStatusMessage, addChatMessage]);
+  }, [listenOnce, speak, acceptAnswer, fixAnswer, setPhase, setStatusMessage, addChatMessage]);
+
+  // ── Letter-by-letter spelling (the fallback) ──
+  // The applicant spells at their own pace; letters appear on screen as they are heard.
+  // "space" between words, "delete" removes the last letter, "start over" clears, "done" finishes.
+  const spelledRef = useRef('');
+
+  const startSpelling = useCallback((fieldIndex, firstChunk = '') => {
+    const field = INTERVIEW_FIELDS[fieldIndex];
+    spelledRef.current = '';
+    if (firstChunk) {
+      const { text } = applySpelling('', firstChunk);
+      spelledRef.current = text;
+      setDraftAnswer(text.toUpperCase());
+      finishSpelling(fieldIndex);
+      return;
+    }
+    const prompt = `Please spell your ${field.label.toLowerCase()} letter by letter. Say space between words, and say done when you finish.`;
+    setPhase(PHASE.ASKING);
+    setStatusMessage('Spell it letter by letter, then say "done".');
+    setDraftAnswer('');
+    addChatMessage('assistant', prompt);
+    speak(prompt, () => listenForLetters(fieldIndex));
+  }, [speak, setDraftAnswer, setPhase, setStatusMessage, addChatMessage]);
+
+  const listenForLetters = useCallback((fieldIndex, silentTries = 0) => {
+    listenOnce({
+      fieldKey: 'spelling',            // Whisper hint: letters spelled one by one
+      vad: { silenceMs: 1700, noSpeechMs: 7000, maxMs: 25000 },   // people pause between letters
+      onStart: () => {
+        setPhase(PHASE.LISTENING);
+        const sofar = spelledRef.current.toUpperCase();
+        setStatusMessage(sofar ? `Spelled so far: ${sofar}  (say "done" when finished)` : 'Listening for letters...');
+      },
+      onError: () => {},
+      onEnd: (heard, meta = {}) => {
+        if (!conversationActiveRef.current) return;
+        const reply = heard.trim();
+        if (!reply) {
+          if (spelledRef.current.trim()) {
+            finishSpelling(fieldIndex);       // they stopped spelling: read it back
+            return;
+          }
+          if (silentTries >= 1) {
+            giveUpOnField(fieldIndex);
+            return;
+          }
+          speak('Please spell it letter by letter, for example: D, E, L, A.', () => listenForLetters(fieldIndex, silentTries + 1));
+          return;
+        }
+        addChatMessage('user', reply, describeEngine(meta));
+        const { text, done } = applySpelling(spelledRef.current, reply);
+        spelledRef.current = text;
+        setDraftAnswer(text.toUpperCase());
+        setStatusMessage(`Spelled so far: ${text.toUpperCase() || '(nothing yet)'}`);
+        if (done && text.trim()) finishSpelling(fieldIndex);
+        else listenForLetters(fieldIndex);    // keep listening quietly for more letters
+      },
+    });
+  }, [listenOnce, speak, giveUpOnField, setDraftAnswer, setPhase, setStatusMessage, addChatMessage]);
+
+  const finishSpelling = useCallback(async (fieldIndex) => {
+    const field = INTERVIEW_FIELDS[fieldIndex];
+    const letters = spelledRef.current.trim();
+    if (!letters) {
+      startSpelling(fieldIndex);
+      return;
+    }
+    let result;
+    try {
+      result = await interpretAnswer(field.key, titleCaseSpelled(letters));
+    } catch {
+      return;
+    }
+    if (!conversationActiveRef.current) return;
+    if (!result.ok || !result.value) {
+      const msg = `${result.message || "That doesn't look right."} Let's spell it again.`;
+      addChatMessage('assistant', msg);
+      speak(msg, () => startSpelling(fieldIndex));
+      return;
+    }
+    // Keep exactly what was spelled (e.g. "Dela Cruz"), not a re-guessed version.
+    confirmAnswer(fieldIndex, { ...result, value: result.value, display: result.value }, { spelled: letters });
+  }, [speak, confirmAnswer, addChatMessage]);
 
   const handleSpokenAnswer = useCallback(async (fieldIndex, transcript, heardBy = {}) => {
     const field = INTERVIEW_FIELDS[fieldIndex];
@@ -1426,42 +1482,13 @@ function useConversationEngine({
       return;
     }
 
-    if (result.needs_confirmation) {
-      const prompt = `${result.message} Say yes, or say it again.`;
-      addChatMessage('assistant', prompt, describeMethods(result.methods, 'Checked'));
-      speak(prompt, () => listenForConfirmation(fieldIndex, result));
+    // "None" for an optional question (no middle name, no ICR) needs no confirmation.
+    if (!result.value && field.optional) {
+      acceptAnswer(fieldIndex, result);
       return;
     }
-
-    acceptAnswer(fieldIndex, result);
-  }, [speak, askQuestion, acceptAnswer, giveUpOnField, setStatusMessage, setPhase, addChatMessage]);
-
-  // "I heard Nails. Is that the place where you were born?" -> yes / no / a new answer.
-  const listenForConfirmation = useCallback((fieldIndex, result) => {
-    listenOnce({
-      fieldKey: 'confirm',   // Whisper hint
-      onStart: () => {
-        setPhase(PHASE.LISTENING);
-        setStatusMessage('Listening for yes or no...');
-      },
-      onError: () => {},
-      onEnd: (heard) => {
-        if (!conversationActiveRef.current) return;
-        const reply = heard.trim();
-        if (isYesAnswer(reply)) {
-          addChatMessage('user', reply);
-          acceptAnswer(fieldIndex, result);
-        } else if (!reply || isNoAnswer(reply)) {
-          if (reply) addChatMessage('user', reply);
-          speak(`Okay. Please say your ${INTERVIEW_FIELDS[fieldIndex].label.toLowerCase()} again.`, () =>
-            listenForAnswer(fieldIndex)
-          );
-        } else {
-          handleSpokenAnswer(fieldIndex, reply);  // they simply said the corrected answer
-        }
-      },
-    });
-  }, [listenOnce, speak, acceptAnswer, handleSpokenAnswer, setPhase, setStatusMessage, addChatMessage]);
+    confirmAnswer(fieldIndex, result);
+  }, [speak, askQuestion, acceptAnswer, confirmAnswer, giveUpOnField, setStatusMessage, setPhase, addChatMessage]);
 
   const startConversation = useCallback(async () => {
     if (isWhisperCaptureSupported()) {

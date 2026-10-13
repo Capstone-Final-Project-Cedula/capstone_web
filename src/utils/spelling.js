@@ -1,0 +1,102 @@
+// Letter-by-letter spelling for the voice interview (fallback when an answer was
+// heard wrong). Turns what the speech engine wrote for a spelled chunk ("D. E. L. A.",
+// "dee ee el ay", "D as in dog", "double L", "space", "delete", "done") into edits
+// of the text spelled so far.
+
+const LETTER_WORDS = {
+  a: 'a', ay: 'a', eh: 'a',
+  b: 'b', bee: 'b', be: 'b', bi: 'b',
+  c: 'c', see: 'c', sea: 'c', si: 'c', cee: 'c',
+  d: 'd', dee: 'd', di: 'd',
+  e: 'e', ee: 'e',
+  f: 'f', ef: 'f', eff: 'f',
+  g: 'g', gee: 'g', ji: 'g', jee: 'g',
+  h: 'h', aitch: 'h', eych: 'h', eitch: 'h', etch: 'h',
+  i: 'i', eye: 'i', ai: 'i',
+  j: 'j', jay: 'j', jey: 'j',
+  k: 'k', kay: 'k', key: 'k', kei: 'k',
+  l: 'l', el: 'l', ell: 'l',
+  m: 'm', em: 'm',
+  n: 'n', en: 'n',
+  'ñ': 'ñ', enye: 'ñ', enyeh: 'ñ', 'enie': 'ñ',
+  o: 'o', oh: 'o', owe: 'o',
+  p: 'p', pee: 'p', pi: 'p',
+  q: 'q', cue: 'q', queue: 'q', kyu: 'q',
+  r: 'r', ar: 'r', are: 'r',
+  s: 's', es: 's', ess: 's',
+  t: 't', tee: 't', tea: 't', ti: 't',
+  u: 'u', you: 'u', yu: 'u',
+  v: 'v', vee: 'v', vi: 'v',
+  w: 'w',
+  x: 'x', ex: 'x', eks: 'x',
+  y: 'y', why: 'y', wai: 'y',
+  z: 'z', zee: 'z', zed: 'z', zi: 'z',
+};
+
+const DONE = new Set(['done', 'finished', 'finish', 'tapos', 'complete', 'completed']);
+const DELETE = new Set(['delete', 'erase', 'backspace', 'undo', 'remove', 'bura', 'burahin']);
+const CLEAR = new Set(['clear', 'restart', 'ulitin']);
+const SPACE = new Set(['space', 'espasyo']);
+
+/**
+ * Apply one spoken chunk to the text spelled so far.
+ * Returns { text, done }.
+ */
+export const applySpelling = (current, transcript) => {
+  let text = String(current || '');
+  let done = false;
+  let t = String(transcript || '').toLowerCase();
+
+  t = t
+    .replace(/\b(?:double you|dobol yu|double u)\b/g, ' w ')
+    .replace(/\b(?:start over|start again)\b/g, ' clear ')
+    .replace(/\b(?:that'?s it|that is it|that'?s all|that is all|i'?m done|ok done|okay done)\b/g, ' done ')
+    .replace(/\bnext word\b/g, ' space ')
+    .replace(/\bn with (?:a )?tilde\b/g, ' ñ ')
+    .replace(/\b(?:as in|like|for)\s+[a-zñ']+/g, ' ')        // "D as in dog", "B for boy"
+    .replace(/[.,!?;:"()]/g, ' ')
+    .replace(/(?<=\b[a-zñ])-(?=[a-zñ]\b)/g, ' ')                // "d-e-l-a" -> "d e l a"
+    .replace(/\s+-\s+|\bdash\b|\bhyphen\b/g, ' - ');
+
+  const tokens = t.split(/\s+/).filter(Boolean);
+  for (let i = 0; i < tokens.length; i++) {
+    const tok = tokens[i];
+    if (DONE.has(tok)) { done = true; continue; }
+    if (DELETE.has(tok)) { text = text.replace(/[\s-]*.$/, ''); continue; }
+    if (CLEAR.has(tok)) { text = ''; continue; }
+    if (SPACE.has(tok)) { if (text && !text.endsWith(' ')) text += ' '; continue; }
+    if (tok === '-') { if (text) text += '-'; continue; }
+    if (tok === 'double' && i + 1 < tokens.length && LETTER_WORDS[tokens[i + 1]]) {
+      text += LETTER_WORDS[tokens[i + 1]].repeat(2);
+      i += 1;
+      continue;
+    }
+    if (LETTER_WORDS[tok]) { text += LETTER_WORDS[tok]; continue; }
+    if (/^[a-zñ']+$/.test(tok)) {
+      // A whole word ("Cruz"): keep it, as a new word if letters came before it.
+      if (text && !/[\s-]$/.test(text)) text += ' ';
+      text += tok.replace(/'/g, '');
+    }
+    // digits and anything else are ignored
+  }
+  return { text: text.replace(/\s+/g, ' ').replace(/^\s+/, ''), done };
+};
+
+/** "dela cruz" -> "D, E, L, A, space, C, R, U, Z" (how the assistant reads it back). */
+export const spellOut = (text) => String(text || '').trim().split('').map((ch) => {
+  if (ch === ' ') return 'space';
+  if (ch === '-') return 'dash';
+  return ch.toUpperCase();
+}).join(', ');
+
+/** "dela cruz" -> "Dela Cruz" */
+export const titleCaseSpelled = (text) => String(text || '').trim().split(' ')
+  .map((w) => w.split('-').map((p) => (p ? p[0].toUpperCase() + p.slice(1) : p)).join('-'))
+  .join(' ');
+
+/** Does a reply look like spelled letters ("D E L A", "dee ee el ay")? */
+export const looksSpelled = (transcript) => {
+  const words = String(transcript || '').toLowerCase().replace(/[.,!?;:-]/g, ' ').split(/\s+/).filter(Boolean);
+  const letters = words.filter((w) => w.length === 1 || (LETTER_WORDS[w] && w.length <= 3));
+  return letters.length >= 2 && letters.length >= words.length - 1;
+};
