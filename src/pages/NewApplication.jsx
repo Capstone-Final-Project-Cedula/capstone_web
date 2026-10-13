@@ -25,6 +25,7 @@ import apiClient from '../api/client';
 import { getApiErrorMessage } from '../api/errors';
 import LoadingSpinner from '../components/common/LoadingSpinner';
 import SusSurveyDialog from '../components/sus/SusSurveyDialog';
+import ConsentNotice from '../components/interview/ConsentNotice';
 
 // ═══════════════════════════════════════════════════════════════
 // SECTION 1: Constants & Configuration
@@ -36,22 +37,19 @@ const INTERVIEW_FIELDS = [
     label: 'Surname',
     question: "What is your surname?",
     hint: 'Example: Santos',
-    requiresSpellingCheck: true,
   },
   {
     key: 'given_name',
     label: 'Given name',
-    question: "Thank you. What is your given name?",
+    question: "What is your given name?",
     hint: 'Example: Maria',
-    requiresSpellingCheck: true,
   },
   {
     key: 'middle_name',
     label: 'Middle name',
-    question: "What is your middle name?",
+    question: "What is your middle name? If none, say none.",
     hint: 'Leave blank if none',
     optional: true,
-    requiresSpellingCheck: true,
   },
   {
     key: 'address',
@@ -137,19 +135,25 @@ const getTimeGreeting = () => {
   return 'Good evening';
 };
 
+// Kept short on purpose: every spoken second adds up over 14 questions.
 const getConversationGreeting = () =>
-  `${getTimeGreeting()}! I am your barangay staff assistant. I will help you apply for your Community Tax Certificate. Please answer each question after you hear it, speaking naturally.`;
+  `${getTimeGreeting()}! I'll help you apply for your Cedula. Please answer each question after the beep.`;
 
-const CONVERSATION_TRANSITIONS = [
-  "Great, thanks.",
-  "Noted.",
-  "Got it.",
-  "Thank you.",
-  "Appreciate that.",
-  "Perfect, thank you.",
-  "All set.",
-  "Understood.",
-];
+const REVIEW_PROMPT =
+  'Please check your details on the screen. If everything is correct, say yes. To change something, say for example: change occupation to teacher.';
+
+// Name questions: confirmed together once ("I have your name as ..."), not one by one.
+const NAME_KEYS = ['given_name', 'middle_name', 'surname'];
+
+const isFilipino = (answers) => /^filipino$/i.test(String(answers?.citizenship || '').trim());
+
+// Next question to ask. The ICR number only applies to foreign residents, so it is
+// skipped when the applicant is Filipino.
+const nextFieldIndex = (index, answers) => {
+  let next = index + 1;
+  if (INTERVIEW_FIELDS[next]?.key === 'icr_no' && isFilipino(answers)) next += 1;
+  return next;
+};
 
 const RETRY_PHRASES = [
   "I didn't quite catch that. Could you say it again?",
@@ -540,6 +544,31 @@ const convertRecordingToWav = async (blob) => {
  * @param {() => void} [opts.onEnd] - fired once when speech finishes (success or fallback)
  * @param {React.MutableRefObject} [opts.audioRef] - optional ref to store the live Audio element, so callers can pause/cancel it
  */
+// Spoken lines already fetched from the backend (text -> audio Blob). The fixed
+// questions are fetched ahead of time (prefetchSpeech) so they play without waiting.
+const speechCache = new Map();
+const SPEECH_CACHE_MAX = 80;
+
+const fetchSpeech = (text) => {
+  const key = String(text || '').trim();
+  if (!key) return Promise.resolve(null);
+  if (!speechCache.has(key)) {
+    const request = apiClient
+      .post('/speech/synthesize', { text: key, rate: SPEECH_RATE }, { responseType: 'blob' })
+      .then((response) => response.data)
+      .catch((error) => {
+        speechCache.delete(key);   // retry next time instead of caching the failure
+        throw error;
+      });
+    speechCache.set(key, request);
+    if (speechCache.size > SPEECH_CACHE_MAX) speechCache.delete(speechCache.keys().next().value);
+  }
+  return speechCache.get(key);
+};
+
+/** Start generating a line in the background; it plays instantly when needed. */
+const prefetchSpeech = (...texts) => texts.forEach((t) => fetchSpeech(t).catch(() => {}));
+
 const synthesizeAndPlay = async (text, { onStart, onEnd, audioRef } = {}) => {
   const spoken = String(text || '').trim();
   if (!spoken) {
@@ -559,12 +588,8 @@ const synthesizeAndPlay = async (text, { onStart, onEnd, audioRef } = {}) => {
   stopCurrentAudio();
 
   try {
-    const response = await apiClient.post(
-      '/speech/synthesize',
-      { text: spoken, rate: SPEECH_RATE },
-      { responseType: 'blob' }
-    );
-    const url = window.URL.createObjectURL(response.data);
+    const blob = await fetchSpeech(spoken);
+    const url = window.URL.createObjectURL(blob);
     const audio = new Audio(url);
     if (audioRef) audioRef.current = audio;
 
@@ -1158,31 +1183,35 @@ function useConversationEngine({
 
   const moveToNextQuestion = useCallback(() => {
     const index = currentFieldIndexRef.current;
-    if (index >= INTERVIEW_FIELDS.length - 1) {
+    const nextIndex = nextFieldIndex(index, answersRef.current);
+    if (nextIndex >= INTERVIEW_FIELDS.length) {
       setPhase(PHASE.CONFIRMING);
-      setStatusMessage('All questions answered. Reviewing your information.');
+      setStatusMessage('All questions answered. Please check the details.');
       window.setTimeout(() => {
         if (conversationActiveRef.current) startVoiceReview();
-      }, 400);
+      }, 150);
       return;
     }
-    const nextIndex = index + 1;
+    if (nextIndex > index + 1 && INTERVIEW_FIELDS[index + 1].key === 'icr_no') {
+      // Filipino citizen: no ICR number to ask about.
+      answersRef.current = { ...answersRef.current, icr_no: '' };
+      setAnswers((prev) => ({ ...prev, icr_no: '' }));
+    }
     currentFieldIndexRef.current = nextIndex;
     setCurrentFieldIndex(nextIndex);
     window.setTimeout(() => {
       if (conversationActiveRef.current) askQuestion(nextIndex);
-    }, 450);
-  }, [setCurrentFieldIndex, setStatusMessage, setPhase]);
+    }, 150);
+  }, [setCurrentFieldIndex, setStatusMessage, setPhase, setAnswers]);
 
   // `value` is already normalized by interpretAnswer (e.g. "May 10, 1990", "168").
   const saveSpokenAnswer = useCallback((fieldIndex, value) => {
     const field = INTERVIEW_FIELDS[fieldIndex];
     setDraftAnswer(value);
-    setAnswers((prev) => {
-      const next = { ...prev, [field.key]: value };
-      answersRef.current = next;
-      return next;
-    });
+    // Update the ref right away: the next step (e.g. skipping ICR for Filipinos) reads it
+    // before React has applied the state update.
+    answersRef.current = { ...answersRef.current, [field.key]: value };
+    setAnswers((prev) => ({ ...prev, [field.key]: value }));
   }, [setAnswers, setDraftAnswer]);
 
   // How many times each question was answered with something unusable.
@@ -1239,28 +1268,29 @@ function useConversationEngine({
     });
   }, [listenOnce, speak, setDraftAnswer, setVoiceError, setStatusMessage, setPhase]);
 
-  // Save a value the applicant gave and move on (or check the spelling of a name first).
+  // After a name was asked again from the name check, come back to the name check.
+  const returnToNameCheckRef = useRef(false);
+
+  // Save a value the applicant gave and move on. No filler phrases between questions;
+  // only values the system converted are read back, so a misheard date or number is caught early.
   const acceptAnswer = useCallback((fieldIndex, result) => {
     const field = INTERVIEW_FIELDS[fieldIndex];
     attemptsRef.current[fieldIndex] = 0;
     saveSpokenAnswer(fieldIndex, result.value || '');
     addChatMessage('assistant', `${field.label}: ${result.display || result.value || 'none'}`, describeMethods(result.methods));
 
-    if (field.requiresSpellingCheck && result.value) {
-      const prompt = `I heard ${result.value}. Is the spelling correct? Say yes, or spell your ${field.label.toLowerCase()} letter by letter.`;
-      setStatusMessage(`I heard "${result.value}". Checking the spelling...`);
-      addChatMessage('assistant', prompt);
-      speak(prompt, () => listenForSpelling(fieldIndex, result.value));
+    if (NAME_KEYS.includes(field.key) && (returnToNameCheckRef.current || field.key === 'middle_name')) {
+      returnToNameCheckRef.current = false;
+      startNameCheck();
       return;
     }
 
-    const transition = pickRandom(CONVERSATION_TRANSITIONS);
-    // Read back values the system converted, so a misheard date or number is caught right away.
     const readBack = ['date', 'height', 'weight', 'gross_annual_income'].includes(field.key) && result.display
-      ? ` I got ${result.display}.`
+      ? `I got ${result.display}.`
       : '';
-    setStatusMessage(`${transition} Moving to the next question.`);
-    speak(`${transition}${readBack}`, moveToNextQuestion);
+    setStatusMessage('Next question...');
+    if (readBack) speak(readBack, moveToNextQuestion);
+    else moveToNextQuestion();
   }, [speak, saveSpokenAnswer, moveToNextQuestion, setStatusMessage, addChatMessage]);
 
   // Too many unusable answers: leave the field blank for the review step instead of looping forever.
@@ -1269,8 +1299,91 @@ function useConversationEngine({
     attemptsRef.current[fieldIndex] = 0;
     const msg = `Let's skip your ${field.label.toLowerCase()} for now. The staff can fill it in at the review.`;
     addChatMessage('assistant', msg);
+    if (NAME_KEYS.includes(field.key) && (returnToNameCheckRef.current || field.key === 'middle_name')) {
+      returnToNameCheckRef.current = false;
+      speak(msg, () => startNameCheck());
+      return;
+    }
     speak(msg, moveToNextQuestion);
   }, [speak, moveToNextQuestion, addChatMessage]);
+
+  // ── One name check instead of a spelling check after every name ──
+  const nameCheckAttemptsRef = useRef(0);
+  const continueAfterNames = useCallback(() => {
+    nameCheckAttemptsRef.current = 0;
+    currentFieldIndexRef.current = INTERVIEW_FIELDS.findIndex((f) => f.key === 'middle_name');
+    moveToNextQuestion();
+  }, [moveToNextQuestion]);
+
+  const startNameCheck = useCallback(() => {
+    const a = answersRef.current;
+    const fullName = [a.given_name, a.middle_name, a.surname].filter((v) => String(v || '').trim()).join(' ');
+    if (!fullName) {
+      continueAfterNames();
+      return;
+    }
+    const prompt = `I have your name as ${fullName}. Is that correct? Say yes, or tell me which name to fix.`;
+    setPhase(PHASE.CONFIRMING);
+    setStatusMessage('Checking your name...');
+    addChatMessage('assistant', prompt);
+    speak(prompt, () => listenForNameCheck());
+  }, [speak, continueAfterNames, setPhase, setStatusMessage, addChatMessage]);
+
+  const listenForNameCheck = useCallback(() => {
+    listenOnce({
+      fieldKey: 'review',   // Whisper hint: "yes" or "change surname to ..."
+      onStart: () => {
+        setPhase(PHASE.LISTENING);
+        setStatusMessage('Say yes, or which name to fix...');
+      },
+      onError: () => {},
+      onEnd: async (heard, meta = {}) => {
+        if (!conversationActiveRef.current) return;
+        const reply = heard.trim();
+        if (reply) addChatMessage('user', reply, describeEngine(meta));
+        if (!reply) {
+          nameCheckAttemptsRef.current += 1;
+          if (nameCheckAttemptsRef.current >= MAX_ATTEMPTS) { continueAfterNames(); return; }
+          speak('Please say yes if your name is correct.', () => listenForNameCheck());
+          return;
+        }
+        if (isYesAnswer(reply)) {
+          continueAfterNames();
+          return;
+        }
+
+        // "change surname to Cruz" -> fix it directly and check the name again.
+        const corrections = parseVoiceCorrections(reply).filter((c) => NAME_KEYS.includes(c.key));
+        if (corrections.length) {
+          let checked;
+          try {
+            checked = await Promise.all(corrections.map(async (c) => ({ ...c, result: await interpretAnswer(c.key, c.value) })));
+          } catch {
+            return;
+          }
+          checked.filter((c) => c.result.ok).forEach((c) => {
+            saveSpokenAnswer(INTERVIEW_FIELDS.findIndex((f) => f.key === c.key), c.result.value || '');
+          });
+          startNameCheck();
+          return;
+        }
+
+        // "the surname" / "last name" -> ask that question again, then come back here.
+        const text = reply.toLowerCase();
+        const which = /sur ?name|last name|family name|apelyido/.test(text) ? 'surname'
+          : /middle/.test(text) ? 'middle_name'
+            : /given|first name|pangalan/.test(text) ? 'given_name' : null;
+        nameCheckAttemptsRef.current += 1;
+        if (which) {
+          returnToNameCheckRef.current = true;
+          askQuestion(INTERVIEW_FIELDS.findIndex((f) => f.key === which));
+          return;
+        }
+        if (nameCheckAttemptsRef.current >= MAX_ATTEMPTS) { continueAfterNames(); return; }
+        speak('Which name should I fix: your surname, given name, or middle name?', () => listenForNameCheck());
+      },
+    });
+  }, [listenOnce, speak, askQuestion, saveSpokenAnswer, continueAfterNames, setPhase, setStatusMessage, addChatMessage]);
 
   const handleSpokenAnswer = useCallback(async (fieldIndex, transcript, heardBy = {}) => {
     const field = INTERVIEW_FIELDS[fieldIndex];
@@ -1350,70 +1463,6 @@ function useConversationEngine({
     });
   }, [listenOnce, speak, acceptAnswer, handleSpokenAnswer, setPhase, setStatusMessage, addChatMessage]);
 
-  const listenForSpelling = useCallback((fieldIndex, baseAnswer) => {
-    const field = INTERVIEW_FIELDS[fieldIndex];
-    const goNext = (value) => {
-      saveSpokenAnswer(fieldIndex, value);
-      attemptsRef.current[fieldIndex] = 0;
-      setStatusMessage(`Saved ${field.label}: ${value || 'blank'}.`);
-      speak(`Thank you, I saved ${value}. Let's continue.`, moveToNextQuestion);
-    };
-
-    listenOnce({
-      fieldKey: 'spelling',   // Whisper hint
-      onStart: () => {
-        setPhase(PHASE.LISTENING);
-        setStatusMessage('Listening: say yes, or spell it letter by letter...');
-      },
-      onError: () => {},
-      onEnd: async (heard) => {
-        if (!conversationActiveRef.current) return;
-        setPhase(PHASE.THINKING);
-        const reply = heard.trim();
-        if (!reply || isYesAnswer(reply)) {
-          if (reply) addChatMessage('user', reply);
-          goNext(baseAnswer);
-          return;
-        }
-        addChatMessage('user', reply);
-        if (countAttempt(fieldIndex) > MAX_ATTEMPTS) {
-          goNext(baseAnswer);  // keep the first answer; staff can still fix it at the review
-          return;
-        }
-        if (isNoAnswer(reply)) {
-          // Before: "no" was saved as the name. Now it means "let me spell it".
-          speak(`Okay. Please spell your ${field.label.toLowerCase()} letter by letter, like C, R, U, Z.`, () =>
-            listenForSpelling(fieldIndex, baseAnswer)
-          );
-          return;
-        }
-        let result;
-        try {
-          result = await interpretAnswer(field.key, reply);  // spelled letters or a corrected name
-        } catch {
-          return;
-        }
-        if (!conversationActiveRef.current) return;
-        if (!result.ok || !result.value) {
-          speak(`${result.message || "I didn't get that."} Say yes if ${baseAnswer} is correct, or spell it letter by letter.`, () =>
-            listenForSpelling(fieldIndex, baseAnswer)
-          );
-          return;
-        }
-        // They repeated the same name instead of saying yes: that is a yes. Keep the first
-        // version ("Dela Cruz", not "Delacruz" written under the spelling hint).
-        const squash = (v) => String(v || '').toLowerCase().replace(/[^a-zñ]/g, '');
-        if (squash(result.value) === squash(baseAnswer)) {
-          goNext(baseAnswer);
-          return;
-        }
-        const confirmPrompt = `I have ${result.value}. Is that correct? Say yes, or spell it again.`;
-        addChatMessage('assistant', confirmPrompt, describeMethods(result.methods));
-        speak(confirmPrompt, () => listenForSpelling(fieldIndex, result.value));
-      },
-    });
-  }, [listenOnce, saveSpokenAnswer, moveToNextQuestion, setStatusMessage, setPhase, speak, addChatMessage]);
-
   const startConversation = useCallback(async () => {
     if (isWhisperCaptureSupported()) {
       try {
@@ -1439,6 +1488,8 @@ function useConversationEngine({
     const startIndex = currentFieldIndexRef.current;
     const alreadyAnswered = Object.values(answersRef.current).some((v) => String(v || '').trim());
     const greeting = getConversationGreeting();
+    // While the greeting plays, prepare every fixed question so each plays without waiting.
+    window.setTimeout(() => prefetchSpeech(...INTERVIEW_FIELDS.map((f) => f.question), REVIEW_PROMPT), 300);
 
     if (!alreadyAnswered && startIndex === 0) {
       setPhase(PHASE.GREETING);
@@ -1456,21 +1507,28 @@ function useConversationEngine({
     }
   }, [speak, askQuestion, setVoiceError, setStatusMessage, setPhase, addChatMessage]);
 
-  const getReviewSummary = useCallback(() =>
-    INTERVIEW_FIELDS.map((f) => `${f.label}: ${answersRef.current[f.key] || 'blank'}`).join('. '),
-  []);
-
+  // The details are shown on screen instead of being read aloud (the old read-back of
+  // all 14 fields took about 53 seconds). One "yes" here issues the Cedula.
   const startVoiceReview = useCallback(() => {
     setStep('voice-review');
-    setAwaitingConfirmation(false);
+    setAwaitingConfirmation(true);
     setCurrentFieldIndex(0);
     setPhase(PHASE.CONFIRMING);
-    setStatusMessage('Reading back all answers for confirmation.');
-    const summary = getReviewSummary();
-    const msg = `Please listen to the full summary. ${summary}. If everything is correct, say yes. If something needs changing, say the field and the new value. For example, say change surname to Cruz and occupation to teacher.`;
-    addChatMessage('assistant', "Here's everything I've collected. I'll read it back once.");
-    speak(msg, () => listenForReviewCorrections());
-  }, [speak, setStep, setAwaitingConfirmation, setCurrentFieldIndex, setStatusMessage, setPhase, getReviewSummary, addChatMessage]);
+    setStatusMessage('Please check the details on the screen.');
+    addChatMessage('assistant', REVIEW_PROMPT);
+    speak(REVIEW_PROMPT, () => listenForReviewCorrections());
+  }, [speak, setStep, setAwaitingConfirmation, setCurrentFieldIndex, setStatusMessage, setPhase, addChatMessage]);
+
+  const issueNow = useCallback(() => {
+    setIsConversationActive(false);
+    conversationActiveRef.current = false;
+    whisper.releaseMicrophone();
+    setPhase(PHASE.ISSUING);
+    setStatusMessage('Issuing Cedula...');
+    addChatMessage('assistant', 'Thank you. Issuing your Cedula now, please wait.');
+    speak('Thank you. Issuing your Cedula now, please wait.');
+    issueForm();
+  }, [speak, whisper, issueForm, setStatusMessage, setPhase, addChatMessage]);
 
   const listenForReviewCorrections = useCallback(() => {
     if (!conversationActiveRef.current) return;
@@ -1502,16 +1560,16 @@ function useConversationEngine({
         }
 
         if (isYesAnswer(trimmed)) {
-          confirmIssue();
+          issueNow();
           return;
         }
 
         const corrections = parseVoiceCorrections(trimmed);
         if (!corrections.length) {
-          speak(
-            "I didn't understand the correction. Please say it like this: change surname to Cruz and address to Barangay One.",
-            () => listenForReviewCorrections()
-          );
+          const msg = isNoAnswer(trimmed)
+            ? 'Okay. Tell me what to change, for example: change surname to Cruz.'
+            : "I didn't understand the correction. Please say it like this: change surname to Cruz.";
+          speak(msg, () => listenForReviewCorrections());
           return;
         }
 
@@ -1546,56 +1604,12 @@ function useConversationEngine({
           );
           return;
         }
-        speak(`Got it, I updated ${readable}. Shall I proceed to issue the Cedula now?`, () =>
-          listenForIssueConfirmation()
+        speak(`I updated ${readable}. Is everything correct now? Say yes to issue your Cedula.`, () =>
+          listenForReviewCorrections()
         );
       },
     });
-  }, [listenOnce, speak, setAnswers, setStatusMessage, setPhase, addChatMessage]);
-
-  const confirmIssue = useCallback(() => {
-    setStep('voice-review');
-    setAwaitingConfirmation(true);
-    setPhase(PHASE.CONFIRMING);
-    setStatusMessage('Ready to issue. Awaiting confirmation.');
-    const msg = 'Thank you. I have confirmed all your information. Shall I proceed to issue and print your Community Tax Certificate now? Please say yes to confirm, or no to cancel.';
-    addChatMessage('assistant', msg);
-    speak(msg, () => listenForIssueConfirmation());
-  }, [speak, setStep, setAwaitingConfirmation, setStatusMessage, setPhase, addChatMessage]);
-
-  const listenForIssueConfirmation = useCallback(() => {
-    listenOnce({
-      fieldKey: 'confirm',   // Whisper hint
-      onStart: () => {
-        setVoiceError('');
-        setPhase(PHASE.LISTENING);
-      },
-      onError: () => {},
-      onEnd: (heard) => {
-        if (!conversationActiveRef.current) return;
-        setPhase(PHASE.THINKING);
-        const trimmed = heard.trim();
-
-        if (isYesAnswer(trimmed)) {
-          setIsConversationActive(false);
-          conversationActiveRef.current = false;
-          setPhase(PHASE.ISSUING);
-          setStatusMessage('Issuing Cedula...');
-          addChatMessage('assistant', 'Confirmed. Issuing your Cedula now, please wait.');
-          speak('Confirmed. Issuing your Cedula now, please wait.');
-          issueForm();
-        } else if (isNoAnswer(trimmed)) {
-          speak("Okay, I won't issue it yet. Let's review your answers again.", () => {
-            startVoiceReview();
-          });
-        } else {
-          speak("Sorry, I didn't understand. Please say yes to confirm, or no to cancel.", () =>
-            listenForIssueConfirmation()
-          );
-        }
-      },
-    });
-  }, [listenOnce, speak, setStatusMessage, setPhase, issueForm, startVoiceReview, addChatMessage]);
+  }, [listenOnce, speak, issueNow, setAnswers, setStatusMessage, setPhase, addChatMessage]);
 
   return {
     isConversationActive,
@@ -1776,6 +1790,7 @@ const NewApplication = () => {
   const [isChecking, setIsChecking] = useState(false);
   const [fieldError, setFieldError] = useState('');      // why the current answer was not accepted
   const [reviewErrors, setReviewErrors] = useState({});   // per-field problems found before issuing
+  const [consentGiven, setConsentGiven] = useState(false); // privacy notice accepted for this applicant
 
   // ── Refs ──
   const mediaRecorderRef = useRef(null);
@@ -1855,8 +1870,19 @@ const NewApplication = () => {
     });
   }, []);
 
+  const stopSpeakText = useCallback(() => {
+    speechSequenceRef.current += 1;
+    window.speechSynthesis?.cancel();
+    if (speechAudioRef.current) {
+      speechAudioRef.current.pause();
+      speechAudioRef.current.src = '';
+      speechAudioRef.current = null;
+    }
+    setIsSpeaking(false);
+  }, []);
+
   // ── Check & store one answer (typed, dictated, or recorded) ──
-  // Returns true when the answer was understood and saved.
+  // Returns { value } when the answer was understood and saved, otherwise false.
   const applyAnswer = useCallback(async (field, text, { quiet = false } = {}) => {
     const value = String(text || '').trim();
     if (!value && !field.optional) {
@@ -1884,13 +1910,14 @@ const NewApplication = () => {
     // Typed or dictated by staff: an unusual place/occupation is kept as entered (no confirmation prompt).
     setAnswers((prev) => ({ ...prev, [field.key]: result.value || '' }));
     setReviewErrors((prev) => ({ ...prev, [field.key]: undefined }));
-    if (!stillHere) return true;
+    const saved = { value: result.value || '' };
+    if (!stillHere) return saved;
     setFieldError('');
     setDraftAnswer(result.value || '');
     setPhase(PHASE.IDLE);
     setStatusMessage(`${field.label} saved.`);
     if (!quiet) addChatMessage('user', `${field.label}: ${result.display || result.value || 'none'}`, describeMethods(result.methods));
-    return true;
+    return saved;
   }, [addChatMessage]);
 
   // ── Save Answer ──
@@ -1905,14 +1932,17 @@ const NewApplication = () => {
       return false;
     }
     if (options.advance) {
-      if (isLastQuestion) {
+      const after = { ...answers, [currentField.key]: saved.value };
+      const next = nextFieldIndex(currentFieldIndex, after);
+      if (next > currentFieldIndex + 1) setAnswers((prev) => ({ ...prev, icr_no: '' }));  // Filipino: no ICR
+      if (isLastQuestion || next >= INTERVIEW_FIELDS.length) {
         setStep('review');
       } else {
-        setCurrentFieldIndex((i) => i + 1);
+        setCurrentFieldIndex(next);
       }
     }
     return true;
-  }, [draftAnswer, answers, currentField, isLastQuestion, applyAnswer]);
+  }, [draftAnswer, answers, currentField, currentFieldIndex, isLastQuestion, applyAnswer]);
 
   // ── Manual Voice Input (Browser Dictation) ──
   const startBrowserDictation = useCallback(() => {
@@ -2220,6 +2250,7 @@ const NewApplication = () => {
     setCtcNumber('');
     setFieldError('');
     setReviewErrors({});
+    setConsentGiven(false);   // the next applicant sees the privacy notice again
     setSurvey({ open: false, transactionId: null, features: [] });
     setAwaitingConfirmation(false);
     setChatHistory([]);
@@ -2324,8 +2355,8 @@ const NewApplication = () => {
           <div>
             <h1 className="text-2xl font-bold text-gray-900">Confirming Your Information</h1>
             <p className="mt-1.5 text-sm text-gray-600 leading-relaxed">
-              I'm reading back everything I've collected. Say <strong>"yes"</strong> if it all looks right,
-              or say one or more changes such as <em>"change surname to Cruz and occupation to teacher."</em>
+              Please check the <strong>Applicant Answers</strong>. Say <strong>"yes"</strong> if everything is
+              correct and the Cedula will be issued, or say a change such as <em>"change surname to Cruz."</em>
             </p>
           </div>
 
@@ -2477,6 +2508,12 @@ const NewApplication = () => {
   // ═══════════════════════════════════════════════════════════════
   return (
     <div className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_360px]">
+      <ConsentNotice
+        open={!consentGiven}
+        onAgree={() => setConsentGiven(true)}
+        speak={speakText}
+        stopSpeaking={stopSpeakText}
+      />
       <div className="space-y-5">
         {/* Header */}
         <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
