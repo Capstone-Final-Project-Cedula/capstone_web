@@ -151,14 +151,25 @@ const ConsentNotice = ({ open, onAgree, speak, stopSpeaking }) => {
             </ul>
             <p className="mt-4 text-[15px] font-medium text-[var(--color-neutral-800)]">{t.choice}</p>
 
-            <div className="mt-6 flex flex-col-reverse sm:flex-row sm:items-center gap-3">
-              <Button variant="ghost" icon={reading ? Square : Volume2} onClick={readAloud} className="sm:mr-auto">
-                {reading ? t.stop : t.read}
-              </Button>
-              <Button variant="secondary" size="lg" className="h-12 px-5 text-base" onClick={() => finish(false)}>
+            <Button variant="ghost" icon={reading ? Square : Volume2} onClick={readAloud} className="mt-5 -ml-2">
+              {reading ? t.stop : t.read}
+            </Button>
+            {/* Two equal columns whose labels may wrap: the Filipino labels are much longer
+                than the English ones and must stay inside the card. */}
+            <div className="mt-3 grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <Button
+                variant="secondary"
+                size="lg"
+                className="order-2 sm:order-1 !h-auto min-h-12 py-3 px-4 text-base !whitespace-normal text-center leading-snug"
+                onClick={() => finish(false)}
+              >
                 {t.decline}
               </Button>
-              <Button size="lg" className="h-12 px-6 text-base" onClick={() => finish(true)}>
+              <Button
+                size="lg"
+                className="order-1 sm:order-2 !h-auto min-h-12 py-3 px-4 text-base !whitespace-normal text-center leading-snug"
+                onClick={() => finish(true)}
+              >
                 {t.agree}
               </Button>
             </div>

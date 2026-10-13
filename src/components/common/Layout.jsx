@@ -6,7 +6,6 @@ import { Menu } from 'lucide-react';
 
 const Layout = () => {
   const [isMobileSidebarOpen, setIsMobileSidebarOpen] = useState(false);
-  const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
   const location = useLocation();
 
   // Close mobile sidebar on route change
@@ -26,20 +25,6 @@ const Layout = () => {
     return () => window.removeEventListener('resize', handleResize);
   }, []);
 
-  // Load sidebar state from localStorage
-  useEffect(() => {
-    const savedState = localStorage.getItem('sidebarCollapsed');
-    if (savedState !== null) {
-      setIsSidebarCollapsed(JSON.parse(savedState));
-    }
-  }, []);
-
-  const handleToggleCollapse = () => {
-    const newState = !isSidebarCollapsed;
-    setIsSidebarCollapsed(newState);
-    localStorage.setItem('sidebarCollapsed', JSON.stringify(newState));
-  };
-
   return (
     <div className="app-shell flex h-screen bg-slate-50 overflow-hidden relative">
       {/* Ambient backdrop — quiet civic-tech texture, sits under everything */}
@@ -58,14 +43,10 @@ const Layout = () => {
         className={`
           sidebar-shell fixed lg:static inset-y-0 left-0 z-50 transform transition-all duration-300 ease-out
           ${isMobileSidebarOpen ? 'translate-x-0 shadow-2xl shadow-black/30' : '-translate-x-full lg:translate-x-0 lg:shadow-none'}
-          ${isSidebarCollapsed ? 'lg:w-20' : 'lg:w-72'}
+          lg:w-72
         `}
       >
-        <Sidebar
-          isCollapsed={isSidebarCollapsed}
-          onToggleCollapse={handleToggleCollapse}
-          onMobileClose={() => setIsMobileSidebarOpen(false)}
-        />
+        <Sidebar onMobileClose={() => setIsMobileSidebarOpen(false)} />
       </div>
 
       {/* Main Content */}

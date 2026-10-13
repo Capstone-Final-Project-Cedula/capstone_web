@@ -54,11 +54,20 @@ export const applySpelling = (current, transcript) => {
     .replace(/\bnext word\b/g, ' space ')
     .replace(/\bn with (?:a )?tilde\b/g, ' ñ ')
     .replace(/\b(?:as in|like|for)\s+[a-zñ']+/g, ' ')        // "D as in dog", "B for boy"
-    .replace(/[.,!?;:"()]/g, ' ')
+    .replace(/[.,!?;:"()]/g, ' ');
+  // Two letter groups written apart ("R-A-L-P-H J-O-H-N"): the pause between them is a
+  // word break, as in a two-word given name.
+  const groups = t.match(/\b[a-zñ](?:-[a-zñ])+\b/g) || [];
+  if (groups.length >= 2) t = t.replace(/\b([a-zñ](?:-[a-zñ])+)\b(?=\s+[a-zñ](?:-[a-zñ])+\b)/g, '$1 space ');
+  t = t
     .replace(/(?<=\b[a-zñ])-(?=[a-zñ]\b)/g, ' ')                // "d-e-l-a" -> "d e l a"
     .replace(/\s+-\s+|\bdash\b|\bhyphen\b/g, ' - ');
 
   const tokens = t.split(/\s+/).filter(Boolean);
+  // When the reply contains spelled letters, words around them are talk, not part of the
+  // name: "No, it's S-A-N-T-O-S", "the spelling is ...", "spelled ..." keep only the letters.
+  const letterCount = tokens.filter((tok) => tok.length === 1 || LETTER_WORDS[tok]).length;
+  const spelledReply = letterCount >= 2;
   for (let i = 0; i < tokens.length; i++) {
     const tok = tokens[i];
     if (DONE.has(tok)) { done = true; continue; }
@@ -72,7 +81,7 @@ export const applySpelling = (current, transcript) => {
       continue;
     }
     if (LETTER_WORDS[tok]) { text += LETTER_WORDS[tok]; continue; }
-    if (/^[a-zñ']+$/.test(tok)) {
+    if (!spelledReply && /^[a-zñ']+$/.test(tok)) {
       // A whole word ("Cruz"): keep it, as a new word if letters came before it.
       if (text && !/[\s-]$/.test(text)) text += ' ';
       text += tok.replace(/'/g, '');
@@ -80,6 +89,22 @@ export const applySpelling = (current, transcript) => {
     // digits and anything else are ignored
   }
   return { text: text.replace(/\s+/g, ' ').replace(/^\s+/, ''), done };
+};
+
+const LEADING_NO = /^\s*(?:no|nope|hindi|mali|wrong|not)[\s,.!-]+/i;
+
+/**
+ * Merge a spelled reply into the spelling so far, favouring what the applicant
+ * meant: "No, O R D I Z" or a full re-spelling (same first letter, about as long)
+ * replaces it; a short chunk after a pause ("I, Z") continues it.
+ */
+export const combineSpelling = (current, transcript) => {
+  const cleaned = String(transcript || '').replace(LEADING_NO, '');
+  const fresh = applySpelling('', cleaned).text;
+  const prev = String(current || '').trim();
+  if (!prev || LEADING_NO.test(String(transcript || ''))) return fresh;
+  if (fresh && fresh[0] === prev[0] && fresh.length >= Math.ceil(prev.length * 0.6)) return fresh;
+  return applySpelling(prev, cleaned).text;
 };
 
 /** "dela cruz" -> "D, E, L, A, space, C, R, U, Z" (how the assistant reads it back). */
@@ -96,7 +121,8 @@ export const titleCaseSpelled = (text) => String(text || '').trim().split(' ')
 
 /** Does a reply look like spelled letters ("D E L A", "dee ee el ay")? */
 export const looksSpelled = (transcript) => {
-  const words = String(transcript || '').toLowerCase().replace(/[.,!?;:-]/g, ' ').split(/\s+/).filter(Boolean);
+  const words = String(transcript || '').replace(LEADING_NO, '').toLowerCase()
+    .replace(/[.,!?;:-]/g, ' ').split(/\s+/).filter(Boolean);
   const letters = words.filter((w) => w.length === 1 || (LETTER_WORDS[w] && w.length <= 3));
   return letters.length >= 2 && letters.length >= words.length - 1;
 };
