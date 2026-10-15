@@ -1,6 +1,9 @@
 import axios from 'axios';
 
-const API_BASE = process.env.REACT_APP_API_URL || 'http://localhost:8000/api';
+// REACT_APP_API_URL wins when set. Otherwise the backend is on the same computer as the page
+// (port 8000), so opening the web app at http://<this-computer's-IP>:3000 from another
+// device reaches the backend too, instead of that device's own "localhost".
+const API_BASE = process.env.REACT_APP_API_URL || `http://${window.location.hostname || 'localhost'}:8000/api`;
 
 const apiClient = axios.create({
   baseURL: API_BASE,
