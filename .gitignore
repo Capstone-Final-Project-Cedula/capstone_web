@@ -24,3 +24,6 @@ yarn-error.log*
 
 # Local environment values (API address etc.): never commit
 .env
+
+graphify-out/
+.graphifyignore
