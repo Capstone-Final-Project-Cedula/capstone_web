@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 120">
+  <defs>
+    <linearGradient id="ceduGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#2563EB" /> <!-- Edu Blue -->
+      <stop offset="100%" stop-color="#10B981" /> <!-- Sync Green -->
+    </linearGradient>
+  </defs>
+  
+  <!-- Transparent or flat background - keep empty/transparent for natural favicon fit -->
+  <!-- Smooth, flat "C" loop -->
+  <path d="M 85 35 C 70 20, 45 20, 30 35 C 15 50, 15 75, 30 90 C 45 105, 70 105, 85 90" fill="none" stroke="url(#ceduGrad)" stroke-width="16" stroke-linecap="round" />
+  
+  <!-- Central hub/node -->
+  <circle cx="58" cy="62" r="14" fill="#2563EB" />
+</svg>
