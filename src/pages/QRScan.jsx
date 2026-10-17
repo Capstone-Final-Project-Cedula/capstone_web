@@ -1,5 +1,4 @@
 import React, { useState } from 'react';
-import { useNavigate } from 'react-router-dom';
 import { toast } from 'react-toastify';
 import {
   QrCode,
@@ -11,6 +10,7 @@ import {
   ScanLine,
   FileCheck2,
   ShieldCheck,
+  UserCheck,
 } from 'lucide-react';
 import QRScanner from '../components/QRScanner/QRScanner';
 import { qrAPI } from '../api/qr';
@@ -19,13 +19,14 @@ import { getApiErrorMessage } from '../api/errors';
 import Card from '../components/ui/Card';
 import Button from '../components/ui/Button';
 import SusSurveyDialog from '../components/sus/SusSurveyDialog';
+import { COUNTER_LINE } from '../utils/counterFlow';
 
 const QRScan = () => {
   const [isLoading, setIsLoading] = useState(false);
   const [scannedData, setScannedData] = useState(null);
   const [showScanner, setShowScanner] = useState(false);
   const [surveyTransactionId, setSurveyTransactionId] = useState(null);
-  const navigate = useNavigate();
+  const [issued, setIssued] = useState(false);
 
   const handleQRScan = async (decodedText) => {
     setIsLoading(true);
@@ -54,25 +55,14 @@ const QRScan = () => {
     setIsLoading(true);
     try {
       const result = await formsAPI.issue(scannedData.form_data, 'qr');
-      toast.success(`CTC #${result.data.ctc_number} issued successfully!`);
-
-      const pdfResponse = await formsAPI.download(result.data.ctc_number);
-      const url = window.URL.createObjectURL(
-        new Blob([pdfResponse.data], { type: 'application/pdf' })
-      );
-      const link = document.createElement('a');
-      link.href = url;
-      link.download = `CTC_${result.data.ctc_number}.pdf`;
-      document.body.appendChild(link);
-      link.click();
-      document.body.removeChild(link);
-      window.URL.revokeObjectURL(url);
-
-      // Offer the usability survey; closing it continues to Records.
+      toast.success('Application saved.');
+      setScannedData(null);
+      setIssued(true);
+      // Offer the usability survey; closing it gets the scanner ready for the next applicant.
       setSurveyTransactionId(result.data.id);
     } catch (error) {
       console.error('Error issuing form:', error);
-      toast.error('Error issuing CTC. Please try again.');
+      toast.error(getApiErrorMessage(error, 'Error issuing CTC. Please try again.'));
     } finally {
       setIsLoading(false);
     }
@@ -81,6 +71,13 @@ const QRScan = () => {
   const handleReset = () => {
     setScannedData(null);
     setShowScanner(true);
+  };
+
+  const handleSurveyClosed = () => {
+    setSurveyTransactionId(null);
+    setIssued(false);
+    setScannedData(null);
+    setShowScanner(false);
   };
 
   const scanSteps = [
@@ -129,7 +126,7 @@ const QRScan = () => {
             }`}
             aria-hidden="true"
           />
-          {scannedData ? 'Scan complete' : showScanner ? 'Scanner active' : 'Idle'}
+          {issued ? 'Saved' : scannedData ? 'Scan complete' : showScanner ? 'Scanner active' : 'Idle'}
         </div>
       </div>
 
@@ -142,7 +139,24 @@ const QRScan = () => {
             </Card>
           )}
 
-          {!isLoading && showScanner && !scannedData && (
+          {!isLoading && issued && (
+            <Card accent="success" className="p-8 sm:p-10 text-center min-h-[380px] flex flex-col items-center justify-center">
+              <div className="w-14 h-14 rounded-full bg-[var(--color-success-light)] flex items-center justify-center mb-5">
+                <UserCheck className="w-7 h-7 text-[var(--color-success)]" aria-hidden="true" />
+              </div>
+              <h2 className="font-display text-xl font-semibold text-[var(--color-neutral-900)] mb-2">
+                Application saved
+              </h2>
+              <p className="text-[var(--color-neutral-600)] max-w-md mx-auto break-words" role="status">
+                {COUNTER_LINE}
+              </p>
+              <Button className="mt-6" icon={Camera} onClick={handleSurveyClosed}>
+                Next Applicant
+              </Button>
+            </Card>
+          )}
+
+          {!isLoading && !issued && showScanner && !scannedData && (
             <Card className="p-5 sm:p-6">
               <div className="mb-5 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
                 <div>
@@ -171,7 +185,7 @@ const QRScan = () => {
             </Card>
           )}
 
-          {!isLoading && !showScanner && !scannedData && (
+          {!isLoading && !issued && !showScanner && !scannedData && (
             <Card className="qr-empty-state p-8 sm:p-10 text-center min-h-[380px] flex flex-col items-center justify-center">
               <div className="qr-empty-ring mb-5">
                 <Camera className="w-7 h-7 text-[var(--color-qr)]" aria-hidden="true" />
@@ -271,10 +285,7 @@ const QRScan = () => {
         open={Boolean(surveyTransactionId)}
         transactionId={surveyTransactionId}
         defaultFeatures={['qr_prefill', 'form_generation']}
-        onClose={() => {
-          setSurveyTransactionId(null);
-          navigate('/records');
-        }}
+        onClose={handleSurveyClosed}
       />
     </div>
   );
