@@ -3,18 +3,50 @@ import { useNavigate } from 'react-router-dom';
 import { formsAPI } from '../api/forms';
 import { getApiErrorMessage } from '../api/errors';
 import { toast } from 'react-toastify';
-import { Search, Plus, X, Download, FileSearch, Mic, QrCode, Trash2, ChevronLeft, ChevronRight, FileText } from 'lucide-react';
+import { Search, Plus, X, Download, Printer, History, FileSearch, Mic, QrCode, Trash2, ChevronLeft, ChevronRight, FileText } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
+import { downloadPdf, downloadAndPrintPdf, fileNameFromResponse } from '../utils/printPdf';
 import Card from '../components/ui/Card';
 import Button from '../components/ui/Button';
 import Badge from '../components/ui/Badge';
 import EmptyState from '../components/ui/EmptyState';
 import { SkeletonTableRow } from '../components/ui/Skeleton';
 
+// Narrow screens: Date Issued and Mode are hidden, and Actions stays pinned to the right
+// edge, so the Print button is always on screen while the other columns scroll. On a phone
+// the CTC number, birth date and address move under the applicant's name, so two people
+// with the same name can still be told apart.
+const COLUMNS = [
+  { label: 'CTC Number', className: 'hidden sm:table-cell' },
+  { label: 'Applicant' },
+  { label: 'Birth Date', className: 'hidden sm:table-cell' },
+  { label: 'Address', className: 'hidden sm:table-cell' },
+  { label: 'Date Issued', className: 'hidden xl:table-cell' },
+  { label: 'Mode', className: 'hidden xl:table-cell' },
+  { label: 'Actions', className: 'sticky right-0 bg-[var(--color-neutral-50)] shadow-[-1px_0_0_var(--color-neutral-100)]' },
+];
+const STICKY_CELL = 'sticky right-0 bg-white group-hover:bg-[var(--color-neutral-50)] shadow-[-1px_0_0_var(--color-neutral-100)] transition-colors duration-150';
+
+// "1990-05-02" → the local date, without the UTC shift new Date("1990-05-02") would add.
+const formatBirthDate = (value) => {
+  const match = /^(\d{4})-(\d{2})-(\d{2})/.exec(value || '');
+  if (!match) return '—';
+  return new Date(Number(match[1]), Number(match[2]) - 1, Number(match[3])).toLocaleDateString();
+};
+
+const fullName = (applicant) =>
+  [applicant?.surname && `${applicant.surname},`, applicant?.given_name, applicant?.middle_name]
+    .filter(Boolean)
+    .join(' ');
+
 const Records = () => {
   const [records, setRecords] = useState([]);
   const [loading, setLoading] = useState(true);
+  // searchInput follows the box; searchTerm is sent to the server once typing pauses,
+  // so the access log gets one row per search instead of one per key.
+  const [searchInput, setSearchInput] = useState('');
   const [searchTerm, setSearchTerm] = useState('');
+  const [busyDownload, setBusyDownload] = useState(null); // `${ctc}:${purpose}` while fetching
   const [filter, setFilter] = useState('all');
   const [page, setPage] = useState(1);
   const [totalRecords, setTotalRecords] = useState(0);
@@ -27,6 +59,17 @@ const Records = () => {
     new Set([1, totalPages, ...Array.from({ length: 5 }, (_, i) => page - 2 + i)
       .filter((number) => number >= 1 && number <= totalPages)])
   ).sort((a, b) => a - b);
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      const next = searchInput.trim();
+      if (next !== searchTerm) {
+        setSearchTerm(next);
+        setPage(1);
+      }
+    }, 400);
+    return () => window.clearTimeout(timer);
+  }, [searchInput, searchTerm]);
 
   useEffect(() => {
     fetchRecords();
@@ -65,27 +108,27 @@ const Records = () => {
     }
   };
 
-  const handleDownload = async (ctcNumber) => {
+  // Download saves the file; Print saves it and opens the print dialog. The first one
+  // for a CTC is the original; the server marks every later one COPY / RE-PRINT.
+  const handleFile = async (ctcNumber, purpose) => {
+    setBusyDownload(`${ctcNumber}:${purpose}`);
     try {
-      const response = await formsAPI.download(ctcNumber);
-      const url = window.URL.createObjectURL(
-        new Blob([response.data], { type: 'application/pdf' })
-      );
-      const link = document.createElement('a');
-      link.href = url;
-      link.download = `CTC_${ctcNumber}.pdf`;
-      document.body.appendChild(link);
-      link.click();
-      document.body.removeChild(link);
-      window.URL.revokeObjectURL(url);
-      toast.success('Download started');
+      const response = await formsAPI.download(ctcNumber, purpose);
+      const fileName = fileNameFromResponse(response, `${ctcNumber}.pdf`);
+      const isCopy = fileName.includes('_COPY');
+      if (purpose === 'print') downloadAndPrintPdf(response.data, fileName);
+      else downloadPdf(response.data, fileName);
+      const what = purpose === 'print' ? 'Opening the print dialog' : 'Download started';
+      toast.success(isCopy ? `${what} (marked COPY / RE-PRINT)` : what);
     } catch (error) {
-      console.error('Error downloading:', error);
-      toast.error('Error downloading file');
+      console.error(`Error during ${purpose}:`, error);
+      toast.error(purpose === 'print' ? 'Could not print this CTC.' : 'Error downloading file');
+    } finally {
+      setBusyDownload(null);
     }
   };
 
-  const hasActiveFilters = searchTerm !== '' || filter !== 'all';
+  const hasActiveFilters = searchInput !== '' || filter !== 'all';
 
   return (
     <div className="animate-fade-in">
@@ -97,11 +140,16 @@ const Records = () => {
             </span>
             Records
           </h1>
-          <p className="text-[var(--color-neutral-500)] mt-1">View and manage all issued CTCs.</p>
+          <p className="text-[var(--color-neutral-500)] mt-1">Find the applicant by name, collect payment, then print.</p>
         </div>
-        <Button icon={Plus} onClick={() => navigate('/new-application')}>
-          New Application
-        </Button>
+        <div className="flex flex-wrap gap-2">
+          <Button variant="secondary" icon={History} onClick={() => navigate('/access-log')}>
+            Access Log
+          </Button>
+          <Button icon={Plus} onClick={() => navigate('/new-application')}>
+            New Application
+          </Button>
+        </div>
       </div>
 
       {/* Search and Filter */}
@@ -111,9 +159,10 @@ const Records = () => {
             <Search className="w-4 h-4 text-[var(--color-neutral-400)] absolute left-3.5 top-1/2 -translate-y-1/2" aria-hidden="true" />
             <input
               type="text"
-              placeholder="Search by name or CTC number…"
-              value={searchTerm}
-              onChange={(e) => { setSearchTerm(e.target.value); setPage(1); }}
+              placeholder="Search by name (any order) or CTC number…"
+              aria-label="Search records by name or CTC number"
+              value={searchInput}
+              onChange={(e) => setSearchInput(e.target.value)}
               className="focusable w-full h-10 pl-10 pr-3.5 border border-[var(--color-neutral-200)] rounded-[var(--radius-md)] text-sm outline-none transition-all duration-150 focus:border-[var(--color-primary)] focus:shadow-[var(--shadow-focus)]"
             />
           </div>
@@ -133,6 +182,7 @@ const Records = () => {
               size="md"
               icon={X}
               onClick={() => {
+                setSearchInput('');
                 setSearchTerm('');
                 setFilter('all');
                 setPage(1);
@@ -150,29 +200,23 @@ const Records = () => {
           <table className="w-full text-sm">
             <thead className="bg-[var(--color-neutral-50)] border-b border-[var(--color-neutral-100)] sticky top-0 z-10">
               <tr>
-                <th className="px-6 py-3 text-left text-xs font-semibold text-[var(--color-neutral-500)] uppercase tracking-wide">
-                  CTC Number
-                </th>
-                <th className="px-6 py-3 text-left text-xs font-semibold text-[var(--color-neutral-500)] uppercase tracking-wide">
-                  Applicant
-                </th>
-                <th className="px-6 py-3 text-left text-xs font-semibold text-[var(--color-neutral-500)] uppercase tracking-wide">
-                  Date Issued
-                </th>
-                <th className="px-6 py-3 text-left text-xs font-semibold text-[var(--color-neutral-500)] uppercase tracking-wide">
-                  Mode
-                </th>
-                <th className="px-6 py-3 text-left text-xs font-semibold text-[var(--color-neutral-500)] uppercase tracking-wide">
-                  Actions
-                </th>
+                {COLUMNS.map(({ label, className = '' }) => (
+                  <th
+                    key={label}
+                    scope="col"
+                    className={`px-4 py-3 text-left text-xs font-semibold text-[var(--color-neutral-500)] uppercase tracking-wide whitespace-nowrap ${className}`}
+                  >
+                    {label}
+                  </th>
+                ))}
               </tr>
             </thead>
             <tbody className="divide-y divide-[var(--color-neutral-100)]">
               {loading ? (
-                Array.from({ length: 5 }).map((_, i) => <SkeletonTableRow key={i} columns={5} />)
+                Array.from({ length: 5 }).map((_, i) => <SkeletonTableRow key={i} columns={7} />)
               ) : records.length === 0 ? (
                 <tr>
-                  <td colSpan="5">
+                  <td colSpan="7">
                     <EmptyState
                       icon={FileSearch}
                       title={hasActiveFilters ? 'No matching records' : 'No records yet'}
@@ -186,17 +230,35 @@ const Records = () => {
                 </tr>
               ) : (
                 records.map((record) => (
-                  <tr key={record.id} className="hover:bg-[var(--color-neutral-50)] transition-colors duration-150">
-                    <td className="px-6 py-4 font-mono-data font-semibold text-[var(--color-primary)]">
+                  <tr key={record.id} className="group hover:bg-[var(--color-neutral-50)] transition-colors duration-150 align-top">
+                    <td className="hidden sm:table-cell px-4 py-4 font-mono-data font-semibold text-[var(--color-primary)] whitespace-nowrap">
                       {record.ctc_number}
                     </td>
-                    <td className="px-6 py-4 text-[var(--color-neutral-800)]">
-                      {record.applicant?.surname}, {record.applicant?.given_name}
+                    <td className="px-4 py-4 text-[var(--color-neutral-800)] font-medium min-w-[10rem] max-w-[16rem] break-words">
+                      {fullName(record.applicant)}
+                      <span className="sm:hidden mt-1 block font-mono-data text-xs font-semibold text-[var(--color-primary)]">
+                        {record.ctc_number}
+                      </span>
+                      <span className="sm:hidden mt-1 block text-xs font-normal text-[var(--color-neutral-600)]">
+                        Born {formatBirthDate(record.applicant?.date_of_birth)}
+                      </span>
+                      <span className="sm:hidden mt-0.5 block text-xs font-normal text-[var(--color-neutral-600)] break-words">
+                        {record.applicant?.address || '—'}
+                      </span>
                     </td>
-                    <td className="px-6 py-4 text-[var(--color-neutral-500)]">
+                    <td className="hidden sm:table-cell px-4 py-4 text-[var(--color-neutral-600)] whitespace-nowrap">
+                      {formatBirthDate(record.applicant?.date_of_birth)}
+                    </td>
+                    <td
+                      className="hidden sm:table-cell px-4 py-4 text-[var(--color-neutral-600)] min-w-[10rem] max-w-[16rem] break-words"
+                      title={record.applicant?.address || ''}
+                    >
+                      {record.applicant?.address || '—'}
+                    </td>
+                    <td className="hidden xl:table-cell px-4 py-4 text-[var(--color-neutral-500)] whitespace-nowrap">
                       {record.issued_at ? new Date(record.issued_at).toLocaleDateString() : '—'}
                     </td>
-                    <td className="px-6 py-4">
+                    <td className="hidden xl:table-cell px-4 py-4">
                       {record.input_method === 'voice' ? (
                         <Badge tone="voice" icon={Mic}>Voice</Badge>
                       ) : record.input_method === 'qr' ? (
@@ -205,24 +267,42 @@ const Records = () => {
                         <Badge tone="neutral">Manual</Badge>
                       )}
                     </td>
-                    <td className="px-6 py-4">
-                      <button
-                        onClick={() => handleDownload(record.ctc_number)}
-                        className="focusable inline-flex items-center gap-1.5 text-[var(--color-primary)] hover:text-[var(--color-primary-hover)] font-medium rounded-[var(--radius-sm)] transition-colors"
-                      >
-                        <Download className="w-3.5 h-3.5" aria-hidden="true" />
-                        Download
-                      </button>
-                      {isAdmin && (
-                        <button
-                          onClick={() => handleDelete(record)}
-                          disabled={deletingId === record.id}
-                          className="focusable ml-4 inline-flex items-center gap-1.5 text-[var(--color-error)] hover:opacity-80 font-medium rounded-[var(--radius-sm)] transition-colors disabled:opacity-50"
+                    <td className={`px-4 py-3 ${STICKY_CELL}`}>
+                      <div className="flex items-center gap-2 whitespace-nowrap">
+                        <Button
+                          size="sm"
+                          icon={Printer}
+                          loading={busyDownload === `${record.ctc_number}:print`}
+                          disabled={busyDownload !== null}
+                          onClick={() => handleFile(record.ctc_number, 'print')}
+                          aria-label={`Print CTC ${record.ctc_number}`}
                         >
-                          <Trash2 className="w-3.5 h-3.5" aria-hidden="true" />
-                          {deletingId === record.id ? 'Deleting...' : 'Delete'}
-                        </button>
-                      )}
+                          Print
+                        </Button>
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          icon={Download}
+                          loading={busyDownload === `${record.ctc_number}:download`}
+                          disabled={busyDownload !== null}
+                          onClick={() => handleFile(record.ctc_number, 'download')}
+                          aria-label={`Download CTC ${record.ctc_number}`}
+                        >
+                          <span className="hidden xl:inline">Download</span>
+                        </Button>
+                        {isAdmin && (
+                          <Button
+                            size="sm"
+                            variant="danger"
+                            icon={Trash2}
+                            disabled={deletingId === record.id}
+                            onClick={() => handleDelete(record)}
+                            aria-label={`Delete CTC ${record.ctc_number}`}
+                          >
+                            <span className="hidden xl:inline">{deletingId === record.id ? 'Deleting...' : 'Delete'}</span>
+                          </Button>
+                        )}
+                      </div>
                     </td>
                   </tr>
                 ))

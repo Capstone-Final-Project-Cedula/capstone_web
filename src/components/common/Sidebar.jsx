@@ -28,11 +28,12 @@ const Sidebar = ({ isCollapsed, onToggleCollapse, onMobileClose }) => {
     { name: 'Settings', href: '/settings', icon: SettingsIcon },
   ];
 
-  // Staff may access only their operational pages; admins retain full access.
+  // Staff run the interview stations only; Records (the counter) and everything
+  // else is admin only.
   const isAdmin = user?.role?.toLowerCase() === 'admin';
   const filteredNavigation = isAdmin
     ? navigation
-    : navigation.filter((item) => ['New Application', 'QR Scanner', 'Records'].includes(item.name));
+    : navigation.filter((item) => ['New Application', 'QR Scanner'].includes(item.name));
 
   // Presentation-only grouping (matches the reference layout's "Main Menu" /
   // "Others" sections). Does not change which items are shown — that's still
