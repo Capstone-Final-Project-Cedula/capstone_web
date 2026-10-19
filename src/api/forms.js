@@ -17,8 +17,9 @@ export const formsAPI = {
     return apiClient.post('/forms/issue', payload);
   },
   
-  // Admin only. purpose 'print' labels the audit-log row; the first download or
-  // print is the original, every later one comes back marked COPY / RE-PRINT.
+  // Admin only. Only purpose 'print' counts: the first print is the original and every
+  // later print comes back marked COPY / RE-PRINT. purpose 'download' is always a COPY
+  // and never uses up the original (plan 001.4). Both are written to the access log.
   download: (ctcNumber, purpose = 'download') =>
     apiClient.get(`/forms/download/${ctcNumber}`, { params: { purpose }, responseType: 'blob' }),
 

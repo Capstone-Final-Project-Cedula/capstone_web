@@ -31,5 +31,5 @@ After changing it, build and deploy again — changing it on the host alone does
 Full hosting checklist: `capstone_docs/DEPLOY.md` in the CeduSync workspace.
 
 ## Checks
-- Lint: `npx eslint src`
+- Lint: `npx eslint src --ext .js,.jsx` (without `--ext`, ESLint 8 skips `.jsx` files)
 - Build: `npm run build`
