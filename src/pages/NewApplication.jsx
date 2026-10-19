@@ -28,6 +28,7 @@ import SusSurveyDialog from '../components/sus/SusSurveyDialog';
 import ConsentNotice from '../components/interview/ConsentNotice';
 import { combineSpelling, looksSpelled, titleCaseSpelled } from '../utils/spelling';
 import { COUNTER_LINE, COUNTER_SCREEN_LINE } from '../utils/counterFlow';
+import { validateFormData } from '../utils/requiredFields';
 import { Keyboard, Mic } from 'lucide-react';
 import Button from '../components/ui/Button';
 import Card from '../components/ui/Card';
@@ -687,25 +688,8 @@ const buildApplicantData = (answers) => {
   };
 };
 
-const validateFormData = (formData) => {
-  const errors = [];
-  if (!formData.surname) errors.push('Surname is required');
-  if (!formData.given_name) errors.push('Given name is required');
-  if (!formData.address) errors.push('Address is required');
-  if (!['Male', 'Female'].includes(formData.sex)) {
-    errors.push('Sex must be Male or Female');
-  }
-  if (!['Single', 'Married', 'Widowed', 'Separated'].includes(formData.civil_status)) {
-    errors.push('Civil status must be Single, Married, Widowed, or Separated');
-  }
-  if (!formData.date_of_birth || !/^\d{4}-\d{2}-\d{2}$/.test(formData.date_of_birth)) {
-    errors.push('Date of birth is missing or could not be read');
-  }
-  if (formData.gross_annual_income && formData.gross_annual_income < 0) {
-    errors.push('Gross annual income must be a positive number');
-  }
-  return errors;
-};
+// validateFormData (the 6 required fields + income) lives in utils/requiredFields.js,
+// shared with the QR page and matching the server's 422 check (plan 001.4).
 
 // ═══════════════════════════════════════════════════════════════
 // SECTION 5: PDF & Print Utilities
@@ -3071,7 +3055,7 @@ const NewApplication = () => {
   // RENDER: Interview State (Main)
   // ═══════════════════════════════════════════════════════════════
   return (
-    <div className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_360px]">
+    <div className="grid grid-cols-1 gap-5 xl:grid-cols-[minmax(0,1fr)_360px]">
       {isIssuing && <IssuingOverlay message={statusMessage} />}
       <ConsentNotice
         open={!consentGiven}
