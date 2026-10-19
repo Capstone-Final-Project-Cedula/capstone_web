@@ -1,6 +1,8 @@
-// The 6 fields a CTC cannot be issued without. The same set (and the same rules) as the
-// backend's missing_required_fields (capstone_backend/app/api/routes/forms.py), which
-// answers 422 when one is blank. Used by the voice page and the QR page (plan 001.4).
+// The 6 fields a CTC cannot be issued without: the same set as the backend's
+// missing_required_fields (capstone_backend/app/api/routes/forms.py), which answers 422
+// when one is blank. The web is stricter: it accepts only the exact values below and
+// YYYY-MM-DD, while the server also reads "m"/"f", MM/DD/YYYY and other date forms.
+// So anything that passes here also passes there. Used by the voice and QR pages (plan 001.4).
 
 export const SEX_OPTIONS = ['Male', 'Female'];
 export const CIVIL_STATUS_OPTIONS = ['Single', 'Married', 'Widowed', 'Separated'];

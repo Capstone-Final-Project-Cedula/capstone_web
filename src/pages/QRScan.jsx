@@ -31,6 +31,14 @@ import {
   missingRequiredFields,
 } from '../utils/requiredFields';
 
+// Today as YYYY-MM-DD on this computer's clock (toISOString would be UTC, a day behind
+// in the Philippines from 00:00 to 08:00).
+const localTodayIso = () => {
+  const now = new Date();
+  const pad = (n) => String(n).padStart(2, '0');
+  return `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
+};
+
 const QRScan = () => {
   const [isLoading, setIsLoading] = useState(false);
   const [scannedData, setScannedData] = useState(null);
@@ -44,7 +52,9 @@ const QRScan = () => {
 
   const formData = scannedData?.form_data || {};
   const missing = missingRequiredFields(formData);
-  const canIssue = Object.keys(missing).length === 0;
+  // A field the server refused stays blocking until it is edited (updateField clears it),
+  // even if the web's own check thinks it is filled.
+  const canIssue = Object.keys(missing).length === 0 && Object.keys(serverErrors).length === 0;
   // Every key the phone sent, plus any required field it left out entirely.
   const fieldKeys = [
     ...Object.keys(formData),
@@ -172,7 +182,7 @@ const QRScan = () => {
           type={key === 'date_of_birth' ? 'date' : 'text'}
           value={key === 'date_of_birth' ? (isValidIsoDate(value) ? value : '') : (value ?? '')}
           onChange={(e) => updateField(key, e.target.value)}
-          max={key === 'date_of_birth' ? new Date().toISOString().slice(0, 10) : undefined}
+          max={key === 'date_of_birth' ? localTodayIso() : undefined}
           error={error}
           autoComplete="off"
         />
