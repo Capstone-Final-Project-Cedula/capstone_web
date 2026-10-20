@@ -9,6 +9,7 @@ import Dashboard from './pages/Dashboard';
 import NewApplication from './pages/NewApplication';
 import QRScan from './pages/QRScan';
 import Records from './pages/Records';
+import AccessLog from './pages/AccessLog';
 import StaffManagement from './pages/StaffManagement';
 import Settings from './pages/Settings';
 import SusSurveyPage from './pages/SusSurveyPage';
@@ -38,7 +39,8 @@ const AppRoutes = () => {
         <Route path="dashboard" element={<ProtectedRoute adminOnly><Dashboard /></ProtectedRoute>} />
         <Route path="new-application" element={<NewApplication />} />
         <Route path="qr-scan" element={<QRScan />} />
-        <Route path="records" element={<Records />} />
+        <Route path="records" element={<ProtectedRoute adminOnly><Records /></ProtectedRoute>} />
+        <Route path="access-log" element={<ProtectedRoute adminOnly><AccessLog /></ProtectedRoute>} />
         <Route path="staff" element={<ProtectedRoute adminOnly><StaffManagement /></ProtectedRoute>} />
         <Route path="settings" element={<ProtectedRoute adminOnly><Settings /></ProtectedRoute>} />
       </Route>

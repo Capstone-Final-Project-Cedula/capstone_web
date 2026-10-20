@@ -8,7 +8,7 @@ React 19 (Create React App / react-scripts 5), React Router 6, Tailwind 3 + desi
 
 ## Commands (from this folder)
 - Run: `npm start` → http://localhost:3000 (needs the backend on port 8000)
-- Lint: `npx eslint src` (react-app config from package.json)
+- Lint: `npx eslint src --ext .js,.jsx` (react-app config from package.json; without `--ext`, ESLint 8 skips `.jsx`)
 - Build check: `npm run build`
 
 ## Map

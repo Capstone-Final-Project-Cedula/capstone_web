@@ -1,5 +1,4 @@
 import React, { useState } from 'react';
-import { useNavigate } from 'react-router-dom';
 import { toast } from 'react-toastify';
 import {
   QrCode,
@@ -11,6 +10,8 @@ import {
   ScanLine,
   FileCheck2,
   ShieldCheck,
+  UserCheck,
+  AlertTriangle,
 } from 'lucide-react';
 import QRScanner from '../components/QRScanner/QRScanner';
 import { qrAPI } from '../api/qr';
@@ -18,14 +19,55 @@ import { formsAPI } from '../api/forms';
 import { getApiErrorMessage } from '../api/errors';
 import Card from '../components/ui/Card';
 import Button from '../components/ui/Button';
+import Input from '../components/ui/Input';
+import Badge from '../components/ui/Badge';
 import SusSurveyDialog from '../components/sus/SusSurveyDialog';
+import { COUNTER_LINE } from '../utils/counterFlow';
+import {
+  REQUIRED_FIELDS,
+  SEX_OPTIONS,
+  CIVIL_STATUS_OPTIONS,
+  isValidIsoDate,
+  missingRequiredFields,
+} from '../utils/requiredFields';
+
+// Today as YYYY-MM-DD on this computer's clock (toISOString would be UTC, a day behind
+// in the Philippines from 00:00 to 08:00).
+const localTodayIso = () => {
+  const now = new Date();
+  const pad = (n) => String(n).padStart(2, '0');
+  return `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
+};
 
 const QRScan = () => {
   const [isLoading, setIsLoading] = useState(false);
   const [scannedData, setScannedData] = useState(null);
   const [showScanner, setShowScanner] = useState(false);
   const [surveyTransactionId, setSurveyTransactionId] = useState(null);
-  const navigate = useNavigate();
+  const [issued, setIssued] = useState(false);
+  // Required fields shown as inputs: the ones blank or invalid at scan time, plus any
+  // the server names in a 422. They stay inputs while being filled (plan 001.4).
+  const [openFields, setOpenFields] = useState([]);
+  const [serverErrors, setServerErrors] = useState({});
+
+  const formData = scannedData?.form_data || {};
+  const missing = missingRequiredFields(formData);
+  // A field the server refused stays blocking until it is edited (updateField clears it),
+  // even if the web's own check thinks it is filled.
+  const canIssue = Object.keys(missing).length === 0 && Object.keys(serverErrors).length === 0;
+  // Every key the phone sent, plus any required field it left out entirely.
+  const fieldKeys = [
+    ...Object.keys(formData),
+    ...REQUIRED_FIELDS.map(({ key }) => key).filter((key) => !(key in formData)),
+  ];
+
+  const updateField = (key, value) => {
+    setScannedData((prev) => ({ ...prev, form_data: { ...prev.form_data, [key]: value } }));
+    setServerErrors((prev) => {
+      const { [key]: _cleared, ...rest } = prev;
+      return rest;
+    });
+  };
 
   const handleQRScan = async (decodedText) => {
     setIsLoading(true);
@@ -39,8 +81,15 @@ const QRScan = () => {
       }
 
       const result = await qrAPI.scan(qrToken);
+      const blank = Object.keys(missingRequiredFields(result.data?.form_data || {}));
       setScannedData(result.data);
-      toast.success('QR code scanned successfully - form auto-populated.');
+      setOpenFields(blank);
+      setServerErrors({});
+      if (blank.length) {
+        toast.warning('QR code scanned. Some required details are missing: fill them in before issuing.');
+      } else {
+        toast.success('QR code scanned successfully - form auto-populated.');
+      }
       setShowScanner(false);
     } catch (error) {
       console.error('Error scanning QR:', error);
@@ -51,28 +100,31 @@ const QRScan = () => {
   };
 
   const handleIssueForm = async () => {
+    if (!canIssue) return;
     setIsLoading(true);
     try {
       const result = await formsAPI.issue(scannedData.form_data, 'qr');
-      toast.success(`CTC #${result.data.ctc_number} issued successfully!`);
-
-      const pdfResponse = await formsAPI.download(result.data.ctc_number);
-      const url = window.URL.createObjectURL(
-        new Blob([pdfResponse.data], { type: 'application/pdf' })
-      );
-      const link = document.createElement('a');
-      link.href = url;
-      link.download = `CTC_${result.data.ctc_number}.pdf`;
-      document.body.appendChild(link);
-      link.click();
-      document.body.removeChild(link);
-      window.URL.revokeObjectURL(url);
-
-      // Offer the usability survey; closing it continues to Records.
+      toast.success('Application saved.');
+      setScannedData(null);
+      setOpenFields([]);
+      setIssued(true);
+      // Offer the usability survey; closing it gets the scanner ready for the next applicant.
       setSurveyTransactionId(result.data.id);
     } catch (error) {
       console.error('Error issuing form:', error);
-      toast.error('Error issuing CTC. Please try again.');
+      // The scanned data stays on screen. A 422 names the fields to fix: open them for editing.
+      const detail = error.response?.data?.detail;
+      const named = Array.isArray(detail)
+        ? detail.filter((item) => item.loc?.[1] === 'applicant_data'
+            && REQUIRED_FIELDS.some(({ key }) => key === item.loc?.[2]))
+        : [];
+      if (named.length) {
+        setOpenFields((prev) => Array.from(new Set([...prev, ...named.map((item) => item.loc[2])])));
+        setServerErrors(Object.fromEntries(named.map((item) => [item.loc[2], item.msg])));
+        toast.error('Some required details are missing. Fill in the highlighted fields, then issue again.');
+      } else {
+        toast.error(getApiErrorMessage(error, 'Error issuing CTC. Please try again.'));
+      }
     } finally {
       setIsLoading(false);
     }
@@ -80,7 +132,82 @@ const QRScan = () => {
 
   const handleReset = () => {
     setScannedData(null);
+    setOpenFields([]);
+    setServerErrors({});
     setShowScanner(true);
+  };
+
+  const handleSurveyClosed = () => {
+    setSurveyTransactionId(null);
+    setIssued(false);
+    setScannedData(null);
+    setOpenFields([]);
+    setServerErrors({});
+    setShowScanner(false);
+  };
+
+  const renderFieldInput = (key) => {
+    const field = REQUIRED_FIELDS.find((item) => item.key === key);
+    const value = formData[key];
+    const inputId = `qr-field-${key}`;
+    const error = serverErrors[key];
+    const selectClass = [
+      'focusable w-full h-11 px-3.5 border rounded-[var(--radius-md)] text-[15px] bg-white outline-none',
+      'transition-all duration-150 focus:border-[var(--color-primary)] focus:shadow-[var(--shadow-focus)]',
+      error ? 'border-[var(--color-error)]' : 'border-[var(--color-neutral-200)]',
+    ].join(' ');
+
+    let control;
+    if (key === 'sex' || key === 'civil_status') {
+      const options = key === 'sex' ? SEX_OPTIONS : CIVIL_STATUS_OPTIONS;
+      control = (
+        <>
+          <select
+            id={inputId}
+            value={options.includes(value) ? value : ''}
+            onChange={(e) => updateField(key, e.target.value)}
+            aria-invalid={Boolean(error) || undefined}
+            className={selectClass}
+          >
+            <option value="">Select…</option>
+            {options.map((option) => <option key={option} value={option}>{option}</option>)}
+          </select>
+          {error && <p className="mt-1.5 text-xs font-medium text-[var(--color-error)] break-words">{error}</p>}
+        </>
+      );
+    } else {
+      control = (
+        <Input
+          id={inputId}
+          type={key === 'date_of_birth' ? 'date' : 'text'}
+          value={key === 'date_of_birth' ? (isValidIsoDate(value) ? value : '') : (value ?? '')}
+          onChange={(e) => updateField(key, e.target.value)}
+          max={key === 'date_of_birth' ? localTodayIso() : undefined}
+          error={error}
+          autoComplete="off"
+        />
+      );
+    }
+
+    return (
+      <div
+        key={key}
+        className="p-3.5 bg-[var(--color-neutral-50)] rounded-[var(--radius-md)] border border-[var(--color-neutral-100)] min-w-0"
+      >
+        <div className="mb-1.5 flex flex-wrap items-center justify-between gap-2">
+          <label
+            htmlFor={inputId}
+            className="block text-xs font-semibold uppercase tracking-wide text-[var(--color-neutral-500)]"
+          >
+            {field ? field.label : key.replace(/_/g, ' ')}
+          </label>
+          {missing[key] && (
+            <Badge tone="warning" icon={AlertTriangle}>Needed before issuing</Badge>
+          )}
+        </div>
+        {control}
+      </div>
+    );
   };
 
   const scanSteps = [
@@ -129,7 +256,7 @@ const QRScan = () => {
             }`}
             aria-hidden="true"
           />
-          {scannedData ? 'Scan complete' : showScanner ? 'Scanner active' : 'Idle'}
+          {issued ? 'Saved' : scannedData ? 'Scan complete' : showScanner ? 'Scanner active' : 'Idle'}
         </div>
       </div>
 
@@ -142,7 +269,24 @@ const QRScan = () => {
             </Card>
           )}
 
-          {!isLoading && showScanner && !scannedData && (
+          {!isLoading && issued && (
+            <Card accent="success" className="p-8 sm:p-10 text-center min-h-[380px] flex flex-col items-center justify-center">
+              <div className="w-14 h-14 rounded-full bg-[var(--color-success-light)] flex items-center justify-center mb-5">
+                <UserCheck className="w-7 h-7 text-[var(--color-success)]" aria-hidden="true" />
+              </div>
+              <h2 className="font-display text-xl font-semibold text-[var(--color-neutral-900)] mb-2">
+                Application saved
+              </h2>
+              <p className="text-[var(--color-neutral-600)] max-w-md mx-auto break-words" role="status">
+                {COUNTER_LINE}
+              </p>
+              <Button className="mt-6" icon={Camera} onClick={handleSurveyClosed}>
+                Next Applicant
+              </Button>
+            </Card>
+          )}
+
+          {!isLoading && !issued && showScanner && !scannedData && (
             <Card className="p-5 sm:p-6">
               <div className="mb-5 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
                 <div>
@@ -171,7 +315,7 @@ const QRScan = () => {
             </Card>
           )}
 
-          {!isLoading && !showScanner && !scannedData && (
+          {!isLoading && !issued && !showScanner && !scannedData && (
             <Card className="qr-empty-state p-8 sm:p-10 text-center min-h-[380px] flex flex-col items-center justify-center">
               <div className="qr-empty-ring mb-5">
                 <Camera className="w-7 h-7 text-[var(--color-qr)]" aria-hidden="true" />
@@ -203,26 +347,31 @@ const QRScan = () => {
               </p>
 
               <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3 mb-6">
-                {Object.entries(scannedData.form_data || {}).map(([key, value]) => (
+                {fieldKeys.map((key) => (openFields.includes(key) ? renderFieldInput(key) : (
                   <div
                     key={key}
-                    className="p-3.5 bg-[var(--color-neutral-50)] rounded-[var(--radius-md)] border border-[var(--color-neutral-100)]"
+                    className="p-3.5 bg-[var(--color-neutral-50)] rounded-[var(--radius-md)] border border-[var(--color-neutral-100)] min-w-0"
                   >
-                    <label className="block text-xs font-semibold uppercase tracking-wide text-[var(--color-neutral-500)] mb-1">
+                    <p className="text-xs font-semibold uppercase tracking-wide text-[var(--color-neutral-500)] mb-1">
                       {key.replace(/_/g, ' ')}
-                    </label>
+                    </p>
                     <p className="text-[15px] font-medium text-[var(--color-neutral-800)] break-words">
-                      {value || '-'}
+                      {formData[key] || '-'}
                     </p>
                   </div>
-                ))}
+                )))}
               </div>
 
+              {!canIssue && (
+                <p className="text-sm text-[var(--color-neutral-600)] mb-3 break-words" role="status">
+                  Fill in the fields marked “Needed before issuing” to issue the CTC.
+                </p>
+              )}
               <div className="qr-result-actions flex flex-wrap gap-3 justify-end pt-5">
                 <Button variant="secondary" icon={RefreshCw} onClick={handleReset}>
                   Scan Another
                 </Button>
-                <Button icon={CheckCircle2} onClick={handleIssueForm}>
+                <Button icon={CheckCircle2} onClick={handleIssueForm} disabled={!canIssue}>
                   Issue CTC
                 </Button>
               </div>
@@ -271,10 +420,7 @@ const QRScan = () => {
         open={Boolean(surveyTransactionId)}
         transactionId={surveyTransactionId}
         defaultFeatures={['qr_prefill', 'form_generation']}
-        onClose={() => {
-          setSurveyTransactionId(null);
-          navigate('/records');
-        }}
+        onClose={handleSurveyClosed}
       />
     </div>
   );

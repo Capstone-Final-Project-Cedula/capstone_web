@@ -1,6 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { useNavigate } from 'react-router-dom';
 import { toast } from 'react-toastify';
 import {
   FaArrowLeft,
@@ -10,7 +9,6 @@ import {
   FaMicrophone,
   FaPause,
   FaPlay,
-  FaPrint,
   FaRegEdit,
   FaStop,
   FaUserTie,
@@ -29,6 +27,12 @@ import LoadingSpinner from '../components/common/LoadingSpinner';
 import SusSurveyDialog from '../components/sus/SusSurveyDialog';
 import ConsentNotice from '../components/interview/ConsentNotice';
 import { combineSpelling, looksSpelled, titleCaseSpelled } from '../utils/spelling';
+import { COUNTER_LINE, COUNTER_SCREEN_LINE } from '../utils/counterFlow';
+import { validateFormData } from '../utils/requiredFields';
+import { Keyboard, Mic } from 'lucide-react';
+import Button from '../components/ui/Button';
+import Card from '../components/ui/Card';
+import Input from '../components/ui/Input';
 
 // ═══════════════════════════════════════════════════════════════
 // SECTION 1: Constants & Configuration
@@ -144,6 +148,30 @@ const getConversationGreeting = () =>
 
 const REVIEW_PROMPT =
   'Please check your details on the screen. If everything is correct, say yes. To change something, say for example: change occupation to teacher.';
+
+// Plan 001.3: spoken only once every check has passed and the save really starts.
+const CHECKING_LINE = 'Checking your details.';
+const SAVING_LINE = 'Saving your application, please wait.';
+
+const isBlank = (value) => !String(value ?? '').trim();
+
+// Required questions still blank (e.g. skipped after too many tries), in interview order.
+const missingRequiredIndexes = (answers) =>
+  INTERVIEW_FIELDS
+    .map((field, index) => ({ field, index }))
+    .filter(({ field }) => REQUIRED_KEYS.includes(field.key) && isBlank(answers?.[field.key]))
+    .map(({ index }) => index);
+
+// "Height (cm)" -> "height", for speech.
+const spokenLabel = (field) => field.label.toLowerCase().replace(/\s*\(.*\)/, '');
+
+// Reply to "Would you like to type it or say it again?". "type" wins when both are heard.
+const parseMissingChoice = (reply) => {
+  const t = String(reply || '').toLowerCase();
+  if (/\b(type|typed|typing|tayp|i-?type|keyboard|write|isulat|sulat)\b/.test(t)) return 'type';
+  if (/\b(say|said|speak|again|repeat|voice|ulit|usab|isulti|sabihin)\b/.test(t)) return 'say';
+  return null;
+};
 
 // Answers that can be spelled letter by letter when they were heard wrong.
 // (Dates, numbers and choices are simply asked again instead.)
@@ -660,74 +688,15 @@ const buildApplicantData = (answers) => {
   };
 };
 
-const validateFormData = (formData) => {
-  const errors = [];
-  if (!formData.surname) errors.push('Surname is required');
-  if (!formData.given_name) errors.push('Given name is required');
-  if (!formData.address) errors.push('Address is required');
-  if (!['Male', 'Female'].includes(formData.sex)) {
-    errors.push('Sex must be Male or Female');
-  }
-  if (!['Single', 'Married', 'Widowed', 'Separated'].includes(formData.civil_status)) {
-    errors.push('Civil status must be Single, Married, Widowed, or Separated');
-  }
-  if (!formData.date_of_birth || !/^\d{4}-\d{2}-\d{2}$/.test(formData.date_of_birth)) {
-    errors.push('Date of birth is missing or could not be read');
-  }
-  if (formData.gross_annual_income && formData.gross_annual_income < 0) {
-    errors.push('Gross annual income must be a positive number');
-  }
-  return errors;
-};
+// validateFormData (the 6 required fields + income) lives in utils/requiredFields.js,
+// shared with the QR page and matching the server's 422 check (plan 001.4).
 
 // ═══════════════════════════════════════════════════════════════
 // SECTION 5: PDF & Print Utilities
 // ═══════════════════════════════════════════════════════════════
 
-// Saves the PDF and opens the print dialog from a hidden frame on this page (no empty
-// new tab while the Cedula is being issued).
-const downloadAndPrintPdf = (pdfData, ctcNumber) => {
-  const pdfBlob = pdfData instanceof Blob ? pdfData : new Blob([pdfData], { type: 'application/pdf' });
-  if (!pdfBlob.size) throw new Error('The downloaded PDF is empty.');
-
-  const url = window.URL.createObjectURL(pdfBlob);
-
-  const link = document.createElement('a');
-  link.href = url;
-  link.download = `CTC_${ctcNumber}.pdf`;
-  document.body.appendChild(link);
-  link.click();
-  document.body.removeChild(link);
-
-  const cleanup = () => {
-    window.setTimeout(() => window.URL.revokeObjectURL(url), 60000);
-  };
-
-  const iframe = document.createElement('iframe');
-  Object.assign(iframe.style, {
-    position: 'fixed', right: '0', bottom: '0', width: '1px', height: '1px',
-    opacity: '0', border: '0',
-  });
-  iframe.src = url;
-
-  iframe.onload = () => {
-    try {
-      iframe.contentWindow?.focus();
-      iframe.contentWindow?.print();
-    } catch {
-      toast.info('PDF downloaded. Open the file to print if the print dialog did not appear.');
-    }
-    window.setTimeout(() => iframe.parentNode && document.body.removeChild(iframe), 60000);
-  };
-
-  iframe.onerror = () => {
-    toast.info('PDF downloaded. Open the file to print if the print dialog did not appear.');
-    if (iframe.parentNode) document.body.removeChild(iframe);
-  };
-
-  document.body.appendChild(iframe);
-  cleanup();
-};
+// Printing happens at the counter (Records), never at the interview station: see
+// utils/printPdf.js.
 
 // ═══════════════════════════════════════════════════════════════
 // SECTION 6: Voice Correction Parser
@@ -1141,6 +1110,7 @@ function useConversationEngine({
   addChatMessage,
   issueForm,
   setConfirmView,
+  setMissingView,
 }) {
   const { isSpeaking, speak: rawSpeak, cancel: cancelSpeech } = useSpeechSynthesis();
   const browser = useBrowserSpeechRecognition();
@@ -1188,6 +1158,13 @@ function useConversationEngine({
   const answersRef = useRef(answers);
   const currentFieldIndexRef = useRef(currentFieldIndex);
   const conversationActiveRef = useRef(false);
+  // The callbacks below are memoized once, so issueForm is read from a ref to always get
+  // the current one (its inputMethod changes after the first render).
+  const issueFormRef = useRef(issueForm);
+  issueFormRef.current = issueForm;
+  // Functions called before they are declared (or by memoized callbacks that would keep a
+  // first-render copy) are read from here; filled in just before the hook returns.
+  const latestRef = useRef({});
 
   useEffect(() => { answersRef.current = answers; }, [answers]);
   useEffect(() => { currentFieldIndexRef.current = currentFieldIndex; }, [currentFieldIndex]);
@@ -1208,7 +1185,22 @@ function useConversationEngine({
     whisper.releaseMicrophone();
     pendingConfirmRef.current = null;
     setConfirmView(null);
-  }, [cancelSpeech, stopBrowserListening, whisper, setStatusMessage, setPhase, setConfirmView]);
+    missingTurnRef.current += 1;
+    setMissingView(null);
+  }, [cancelSpeech, stopBrowserListening, whisper, setStatusMessage, setPhase, setConfirmView, setMissingView]);
+
+  // The conversation is over (Cedula saved, or moved to the manual review page): stop
+  // listening and free the microphone, but let the last spoken line finish.
+  const endConversation = useCallback(() => {
+    setIsConversationActive(false);
+    conversationActiveRef.current = false;
+    stopBrowserListening();
+    whisper.releaseMicrophone();
+    pendingConfirmRef.current = null;
+    setConfirmView(null);
+    missingTurnRef.current += 1;
+    setMissingView(null);
+  }, [stopBrowserListening, whisper, setConfirmView, setMissingView]);
 
   // Where to continue after the applicant went back to an earlier question by voice.
   const resumeIndexRef = useRef(null);
@@ -1226,7 +1218,7 @@ function useConversationEngine({
       setPhase(PHASE.CONFIRMING);
       setStatusMessage('All questions answered. Please check the details.');
       window.setTimeout(() => {
-        if (conversationActiveRef.current) startVoiceReview();
+        if (conversationActiveRef.current) latestRef.current.startVoiceReview();
       }, 150);
       return;
     }
@@ -1263,6 +1255,12 @@ function useConversationEngine({
   // The on-screen confirmation panel (see confirmAnswer).
   const confirmTurnRef = useRef(0);        // a tap ends the voice turn in progress
   const pendingConfirmRef = useRef(null);  // { fieldIndex, result } while the panel is up
+
+  // The missing-answers step before the final "yes" (plan 001.3).
+  const missingTurnRef = useRef(0);          // a tap ends the voice turn in progress
+  const pendingMissingRef = useRef(null);    // field index shown on the missing-answer panel
+  const missingRetryRef = useRef(new Set()); // fields asked again from that step ("Say it again")
+
   const clearConfirmView = useCallback(() => {
     pendingConfirmRef.current = null;
     setConfirmView(null);
@@ -1319,6 +1317,7 @@ function useConversationEngine({
   const acceptAnswer = useCallback((fieldIndex, result) => {
     const field = INTERVIEW_FIELDS[fieldIndex];
     attemptsRef.current[fieldIndex] = 0;
+    missingRetryRef.current.delete(fieldIndex);
     clearConfirmView();
     saveSpokenAnswer(fieldIndex, result.value || '');
     addChatMessage('assistant', `${field.label}: ${result.display || result.value || 'none'}`);
@@ -1326,12 +1325,20 @@ function useConversationEngine({
     moveToNextQuestion();
   }, [saveSpokenAnswer, moveToNextQuestion, clearConfirmView, setStatusMessage, addChatMessage]);
 
-  // Too many unusable answers: leave the field blank for the review step instead of looping forever.
+  // Too many unusable answers: leave the field blank instead of looping forever. Before the
+  // final "yes" the applicant is asked for it again (type it or say it again). If speaking
+  // fails again on that second round, the text box opens on its own.
   const giveUpOnField = useCallback((fieldIndex) => {
     const field = INTERVIEW_FIELDS[fieldIndex];
     attemptsRef.current[fieldIndex] = 0;
     clearConfirmView();
-    const msg = `Let's skip your ${field.label.toLowerCase()} for now. The staff can fill it in at the review.`;
+    if (missingRetryRef.current.has(fieldIndex)) {
+      missingRetryRef.current.delete(fieldIndex);
+      resumeIndexRef.current = null;
+      latestRef.current.openMissingTyping(fieldIndex, { auto: true });
+      return;
+    }
+    const msg = `Let's skip your ${spokenLabel(field)} for now. We will come back to it at the end.`;
     addChatMessage('assistant', msg);
     speak(msg, moveToNextQuestion);
   }, [speak, moveToNextQuestion, clearConfirmView, addChatMessage]);
@@ -1610,7 +1617,8 @@ function useConversationEngine({
     confirmAnswer(fieldIndex, result);
   }, [speak, askQuestion, acceptAnswer, confirmAnswer, giveUpOnField, setStatusMessage, setPhase, addChatMessage]);
 
-  const startConversation = useCallback(async () => {
+  // Get the microphone and switch the conversation on. Returns false when voice cannot run.
+  const activateVoice = useCallback(async () => {
     if (isWhisperCaptureSupported()) {
       try {
         await whisper.prepare();   // ask for the microphone once, before the greeting
@@ -1619,18 +1627,23 @@ function useConversationEngine({
       } catch {
         setVoiceError('The microphone is blocked. Allow microphone access for this site (the lock icon in the address bar), or type the answers.');
         toast.error('Microphone access is needed for the voice interview.');
-        return;
+        return false;
       }
     } else if (isSpeechSupported()) {
       engineRef.current = 'browser';
     } else {
       setVoiceError('This browser cannot record audio. Please use Chrome or Edge, or type the answers.');
       toast.error('Voice conversation is not supported in this browser.');
-      return;
+      return false;
     }
     setVoiceError('');
     setIsConversationActive(true);
     conversationActiveRef.current = true;
+    return true;
+  }, [whisper, setVoiceError]);
+
+  const startConversation = useCallback(async () => {
+    if (!(await activateVoice())) return;
 
     const startIndex = currentFieldIndexRef.current;
     const alreadyAnswered = Object.values(answersRef.current).some((v) => String(v || '').trim());
@@ -1659,11 +1672,154 @@ function useConversationEngine({
       addChatMessage('assistant', resumeMsg);
       speak(resumeMsg, () => askQuestion(startIndex));
     }
-  }, [speak, askQuestion, setVoiceError, setStatusMessage, setPhase, addChatMessage]);
+  }, [activateVoice, speak, askQuestion, setStatusMessage, setPhase, addChatMessage]);
+
+  // ── Missing answers, before the final "yes" (plan 001.3) ──
+  // Each required question still blank is offered again, in interview order:
+  // "I still need your address. Would you like to type it or say it again?"
+  const askMissingField = useCallback((fieldIndex) => {
+    const field = INTERVIEW_FIELDS[fieldIndex];
+    missingTurnRef.current += 1;
+    pendingMissingRef.current = fieldIndex;
+    clearConfirmView();
+    setStep('voice-review');
+    setAwaitingConfirmation(false);
+    setCurrentFieldIndex(fieldIndex);
+    setMissingView({ key: field.key, label: field.label, hint: field.hint, mode: 'choice', allowSay: true, error: '', checking: false });
+    setPhase(PHASE.CONFIRMING);
+    setStatusMessage(`Still needed: ${field.label}. Type it or say it again.`);
+    const prompt = `I still need your ${spokenLabel(field)}. Would you like to type it or say it again?`;
+    addChatMessage('assistant', prompt);
+    speak(prompt, () => latestRef.current.listenForMissingChoice(fieldIndex));
+  }, [speak, clearConfirmView, setStep, setAwaitingConfirmation, setCurrentFieldIndex, setMissingView, setPhase, setStatusMessage, addChatMessage]);
+
+  // The text box for one field. `auto`: speaking failed again, so it opened on its own
+  // and "Say it again" is no longer offered (no endless loop).
+  const openMissingTyping = useCallback((fieldIndex, { auto = false } = {}) => {
+    const field = INTERVIEW_FIELDS[fieldIndex];
+    missingTurnRef.current += 1;
+    pendingMissingRef.current = fieldIndex;
+    clearConfirmView();
+    stopBrowserListening();
+    setStep('voice-review');
+    setAwaitingConfirmation(false);
+    setCurrentFieldIndex(fieldIndex);
+    setMissingView({ key: field.key, label: field.label, hint: field.hint, mode: 'typing', allowSay: !auto, error: '', checking: false });
+    setPhase(PHASE.CONFIRMING);
+    setStatusMessage(`Type your ${spokenLabel(field)} in the box.`);
+    const msg = auto
+      ? `Let's type your ${spokenLabel(field)} instead. Please type it in the box on the screen.`
+      : `Okay. Please type your ${spokenLabel(field)} in the box on the screen.`;
+    addChatMessage('assistant', msg);
+    speak(msg);   // no listening: the applicant is typing
+  }, [speak, clearConfirmView, stopBrowserListening, setStep, setAwaitingConfirmation, setCurrentFieldIndex, setMissingView, setPhase, setStatusMessage, addChatMessage]);
+
+  // "Say it again": the normal question with its normal retries, then back to the review.
+  const sayMissingAgain = useCallback((fieldIndex) => {
+    missingTurnRef.current += 1;
+    pendingMissingRef.current = null;
+    setMissingView(null);
+    missingRetryRef.current.add(fieldIndex);
+    attemptsRef.current[fieldIndex] = 0;
+    spelledRef.current = '';
+    resumeIndexRef.current = INTERVIEW_FIELDS.length;   // after this answer, go straight to the review
+    setStep('interview');
+    askQuestion(fieldIndex);
+  }, [setMissingView, setStep, askQuestion]);
+
+  const listenForMissingChoice = useCallback((fieldIndex, tries = 0) => {
+    if (!conversationActiveRef.current) return;
+    const turn = missingTurnRef.current;
+    listenOnce({
+      fieldKey: 'missing_choice',
+      vad: { noSpeechMs: 6000, silenceMs: 700 },
+      onStart: () => {
+        setPhase(PHASE.LISTENING);
+        setStatusMessage('Listening: say "type" or "say it again"...');
+      },
+      onError: () => {},
+      onEnd: (heard) => {
+        if (!conversationActiveRef.current || turn !== missingTurnRef.current) return;
+        const reply = heard.trim();
+        if (reply) addChatMessage('user', reply);
+        const choice = parseMissingChoice(reply);
+        if (choice === 'type') openMissingTyping(fieldIndex);
+        else if (choice === 'say') sayMissingAgain(fieldIndex);
+        else if (tries >= 1) openMissingTyping(fieldIndex, { auto: true });   // speech is not getting through
+        else {
+          const msg = 'Please say type, or say it again. You can also tap a button on the screen.';
+          addChatMessage('assistant', msg);
+          speak(msg, () => listenForMissingChoice(fieldIndex, tries + 1));
+        }
+      },
+    });
+  }, [listenOnce, speak, openMissingTyping, sayMissingAgain, setPhase, setStatusMessage, addChatMessage]);
+
+  // A typed answer is checked by the same /api/extraction rules as a spoken one.
+  const submitMissingTyped = useCallback(async (fieldIndex, text) => {
+    const field = INTERVIEW_FIELDS[fieldIndex];
+    const typed = String(text || '').trim();
+    if (!typed) return;
+    const turn = missingTurnRef.current;
+    setMissingView((view) => (view ? { ...view, checking: true, error: '' } : view));
+    let result;
+    try {
+      result = await interpretAnswer(field.key, typed);
+    } catch {
+      return;   // session expired: the API client sends the user to the login page
+    }
+    if (!conversationActiveRef.current || turn !== missingTurnRef.current) return;
+    if (!result.ok || isBlank(result.value)) {
+      const msg = result.message || `Please type your ${spokenLabel(field)}.`;
+      setMissingView((view) => (view ? { ...view, checking: false, error: msg } : view));
+      speak(msg);
+      return;
+    }
+    // Names and places keep exactly what was typed (as with spelling); dates, numbers and
+    // choices take the checked form ("female" -> "Female").
+    const value = SPELLABLE_KEYS.has(field.key)
+      ? (typed !== typed.toLowerCase() && typed !== typed.toUpperCase() ? typed : titleCaseSpelled(typed.toLowerCase()))
+      : result.value;
+    addChatMessage('user', typed);
+    addChatMessage('assistant', `${field.label}: ${SPELLABLE_KEYS.has(field.key) ? value : (result.display || value)}`);
+    saveSpokenAnswer(fieldIndex, value);
+    attemptsRef.current[fieldIndex] = 0;
+    missingRetryRef.current.delete(fieldIndex);
+    pendingMissingRef.current = null;
+    setMissingView(null);
+    latestRef.current.startVoiceReview();
+  }, [speak, saveSpokenAnswer, setMissingView, addChatMessage]);
+
+  // The Type it / Say it again buttons and the text box. A tap ends the voice turn in progress.
+  const tapMissing = useCallback((choice, typedValue = '') => {
+    const fieldIndex = pendingMissingRef.current;
+    if (fieldIndex === null || !conversationActiveRef.current) return;
+    if (choice === 'typed') {
+      submitMissingTyped(fieldIndex, typedValue);
+      return;
+    }
+    missingTurnRef.current += 1;
+    cancelSpeech();
+    stopBrowserListening();
+    if (choice === 'type') openMissingTyping(fieldIndex);
+    else if (choice === 'say') sayMissingAgain(fieldIndex);
+  }, [cancelSpeech, stopBrowserListening, openMissingTyping, sayMissingAgain, submitMissingTyped]);
 
   // The details are shown on screen instead of being read aloud (the old read-back of
-  // all 14 fields took about 53 seconds). One "yes" here issues the Cedula.
-  const startVoiceReview = useCallback(() => {
+  // all 14 fields took about 53 seconds). Missing answers are asked for first; "say yes"
+  // is offered only when nothing required is blank.
+  const startVoiceReview = useCallback(async () => {
+    // The "Voice Review" button on the manual review page: switch the microphone on first,
+    // or nothing would be listening for the "yes".
+    if (!conversationActiveRef.current && !(await activateVoice())) return;
+    const missing = missingRequiredIndexes(answersRef.current);
+    if (missing.length) {
+      askMissingField(missing[0]);
+      return;
+    }
+    missingTurnRef.current += 1;
+    pendingMissingRef.current = null;
+    setMissingView(null);
     setStep('voice-review');
     setAwaitingConfirmation(true);
     setCurrentFieldIndex(0);
@@ -1671,18 +1827,35 @@ function useConversationEngine({
     setStatusMessage('Please check the details on the screen.');
     addChatMessage('assistant', REVIEW_PROMPT);
     speak(REVIEW_PROMPT, () => listenForReviewCorrections());
-  }, [speak, setStep, setAwaitingConfirmation, setCurrentFieldIndex, setStatusMessage, setPhase, addChatMessage]);
+  }, [activateVoice, askMissingField, speak, setMissingView, setStep, setAwaitingConfirmation, setCurrentFieldIndex, setStatusMessage, setPhase, addChatMessage]);
 
-  const issueNow = useCallback(() => {
-    setIsConversationActive(false);
-    conversationActiveRef.current = false;
-    whisper.releaseMicrophone();
-    setPhase(PHASE.ISSUING);
-    setStatusMessage('Issuing Cedula...');
-    addChatMessage('assistant', 'Thank you. Issuing your Cedula now, please wait.');
-    speak('Thank you. Issuing your Cedula now, please wait.');
-    issueForm();
-  }, [speak, whisper, issueForm, setStatusMessage, setPhase, addChatMessage]);
+  // "Yes": check first ("Checking your details."); issueForm says "Saving your application"
+  // only once every check has passed. The microphone stays on until the outcome is known.
+  const issueNow = useCallback(async () => {
+    if (missingRequiredIndexes(answersRef.current).length) {
+      startVoiceReview();
+      return;
+    }
+    setAwaitingConfirmation(false);
+    setPhase(PHASE.THINKING);
+    setStatusMessage('Checking your details…');
+    addChatMessage('assistant', 'Checking your details…');
+    speak(CHECKING_LINE);
+    const outcome = await issueFormRef.current({
+      say: (text, onEnd) => {
+        if (text === SAVING_LINE) addChatMessage('assistant', SAVING_LINE);
+        speak(text, onEnd);
+      },
+    });
+    if (outcome === 'missing') {
+      // A required answer is blank after all: ask for it, with the microphone still on.
+      if (conversationActiveRef.current) startVoiceReview();
+      return;
+    }
+    // 'issued' (survey and counter line next), 'review' (moved to the manual review page,
+    // which was said aloud) or 'auth' (login expired): the conversation is over.
+    endConversation();
+  }, [speak, endConversation, startVoiceReview, setAwaitingConfirmation, setStatusMessage, setPhase, addChatMessage]);
 
   const listenForReviewCorrections = useCallback(() => {
     if (!conversationActiveRef.current) return;
@@ -1714,7 +1887,8 @@ function useConversationEngine({
         }
 
         if (isYesAnswer(trimmed)) {
-          issueNow();
+          addChatMessage('user', trimmed);
+          issueNow();   // asks for any missing answer first instead of saving
           return;
         }
 
@@ -1769,12 +1943,19 @@ function useConversationEngine({
           );
           return;
         }
+        if (missingRequiredIndexes(answersRef.current).length) {
+          // e.g. "change occupation to none" blanked a required answer: ask for it first.
+          speak(`I updated ${readable}.`, () => latestRef.current.startVoiceReview());
+          return;
+        }
         speak(`I updated ${readable}. Is everything correct now? Say yes to issue your Cedula.`, () =>
           listenForReviewCorrections()
         );
       },
     });
   }, [listenOnce, speak, issueNow, setAnswers, setStatusMessage, setPhase, addChatMessage]);
+
+  latestRef.current = { startVoiceReview, openMissingTyping, listenForMissingChoice };
 
   return {
     isConversationActive,
@@ -1784,6 +1965,7 @@ function useConversationEngine({
     stopConversation,
     startVoiceReview,
     tapConfirm,
+    tapMissing,
   };
 }
 
@@ -1792,26 +1974,91 @@ function useConversationEngine({
 // SECTION 8: Animated Sub-Components (inside same file)
 // ═══════════════════════════════════════════════════════════════
 
-/** Full-screen "please wait" while the Cedula is checked, saved and its PDF prepared. */
+/** Full-screen "please wait" while the answers are checked and the application is saved. */
 const IssuingOverlay = ({ message }) => createPortal(
   <div
-    className="fixed inset-0 z-[90] flex items-center justify-center bg-slate-900/40 backdrop-blur-sm px-4"
+    className="fixed inset-0 z-[90] flex items-center justify-center bg-black/40 backdrop-blur-sm px-4"
     role="alertdialog"
     aria-modal="true"
     aria-live="assertive"
-    aria-label="Issuing the Cedula"
+    aria-label="Saving the application"
   >
-    <div className="w-full max-w-sm rounded-2xl bg-white p-8 text-center shadow-2xl">
+    <div className="w-full max-w-sm rounded-[var(--radius-xl)] bg-white p-8 text-center shadow-[var(--shadow-lg)]">
       <div className="mx-auto mb-5 flex h-16 w-16 items-center justify-center">
         <LoadingSpinner size="lg" />
       </div>
-      <h2 className="text-xl font-bold text-gray-900">Issuing the Cedula</h2>
-      <p className="mt-2 text-sm text-gray-600">{message || 'Please wait...'}</p>
-      <p className="mt-4 text-xs text-gray-400">Please don't close this page.</p>
+      <h2 className="text-xl font-bold text-[var(--color-neutral-900)]">Please wait</h2>
+      <p className="mt-2 text-sm text-[var(--color-neutral-600)] break-words">{message || 'Checking your details…'}</p>
+      <p className="mt-4 text-xs text-[var(--color-neutral-500)]">Please don't close this page.</p>
     </div>
   </div>,
   document.body,
 );
+
+/**
+ * A required answer that is still blank (skipped during the interview), asked for again
+ * before the final "yes": Type it / Say it again, then a text box for that field only.
+ * The buttons work like saying "type" or "say it again", even if that word was misheard.
+ */
+const MissingFieldPanel = ({ view, onType, onSay, onTyped }) => {
+  const [typed, setTyped] = useState('');
+  const inputRef = useRef(null);
+  useEffect(() => { setTyped(''); }, [view.key]);
+  useEffect(() => {
+    if (view.mode === 'typing') inputRef.current?.focus();
+  }, [view.mode, view.key]);
+
+  const submit = (e) => {
+    e.preventDefault();
+    if (typed.trim() && !view.checking) onTyped(typed);
+  };
+
+  return (
+    <Card accent="warning" className="p-5" role="region" aria-live="polite" aria-label={`Still needed: ${view.label}`}>
+      <p className="text-sm font-semibold text-[var(--color-warning)]">Still needed</p>
+      <p className="mt-1 text-xl font-bold text-[var(--color-neutral-900)] break-words">
+        I still need your {view.label.toLowerCase()}.
+      </p>
+
+      {view.mode === 'choice' && (
+        <>
+          <p className="mt-1 text-sm text-[var(--color-neutral-600)]">
+            Say <strong>"type"</strong> or <strong>"say it again"</strong>, or tap a button.
+          </p>
+          <div className="mt-4 grid grid-cols-1 gap-2 sm:grid-cols-2">
+            <Button size="lg" icon={Keyboard} onClick={onType}>Type it</Button>
+            <Button size="lg" variant="secondary" icon={Mic} onClick={onSay}>Say it again</Button>
+          </div>
+        </>
+      )}
+
+      {view.mode === 'typing' && (
+        <form onSubmit={submit} className="mt-4 space-y-3">
+          <Input
+            ref={inputRef}
+            label={`Type your ${view.label.toLowerCase()}`}
+            value={typed}
+            onChange={(e) => setTyped(e.target.value)}
+            placeholder={view.hint}
+            error={view.error}
+            required
+            autoComplete="off"
+          />
+          <div className="flex flex-col gap-2 sm:flex-row">
+            <Button type="submit" size="lg" loading={view.checking} disabled={!typed.trim() || view.checking}>
+              Save answer
+            </Button>
+            {view.allowSay && (
+              <Button variant="ghost" size="lg" icon={Mic} onClick={onSay} disabled={view.checking}>
+                Say it again instead
+              </Button>
+            )}
+          </div>
+        </form>
+      )}
+    </Card>
+  );
+};
 
 /**
  * The answer being checked, shown big with its letters, so the applicant can see a
@@ -2032,7 +2279,6 @@ SummaryRow.displayName = 'SummaryRow';
 // ═══════════════════════════════════════════════════════════════
 
 const NewApplication = () => {
-  const navigate = useNavigate();
   const chatContainerRef = useRef(null);
 
   // ── Core State ──
@@ -2042,12 +2288,14 @@ const NewApplication = () => {
   const [currentFieldIndex, setCurrentFieldIndex] = useState(0);
   const [answers, setAnswers] = useState({});
   const [draftAnswer, setDraftAnswer] = useState('');
-  const [ctcNumber, setCtcNumber] = useState('');
   // Usability survey offered after the CTC is issued
   const [survey, setSurvey] = useState({ open: false, transactionId: null, features: [] });
   const [awaitingConfirmation, setAwaitingConfirmation] = useState(false);
   // { mode: 'confirm' | 'spelling', label, value, letters, canSpell } while an answer is checked
   const [confirmView, setConfirmView] = useState(null);
+  // { key, label, hint, mode: 'choice' | 'typing', allowSay, error, checking } while a
+  // required answer that is still blank is asked for again before the final "yes"
+  const [missingView, setMissingView] = useState(null);
   const [statusMessage, setStatusMessage] = useState('Ready');
   const [phase, setPhase] = useState(PHASE.IDLE);
   const [voiceError, setVoiceError] = useState('');
@@ -2384,21 +2632,38 @@ const NewApplication = () => {
   }, [answers, speakText]);
 
   // ── Issue Form ──
-  const issueForm = useCallback(async () => {
+  // Returns what happened, so the voice conversation knows what to do next:
+  //   'issued'  — saved; survey and counter line follow (nothing is printed here)
+  //   'missing' — a required answer is blank (voice: the conversation asks for it)
+  //   'review'  — stopped; moved to the manual review page and said so
+  //   'auth'    — login expired; the API client goes to the login page
+  // `say` (voice only) is the conversation's own speaker, so nothing talks over it.
+  const issueForm = useCallback(async ({ say } = {}) => {
+    const fromVoice = typeof say === 'function';
+    const tell = fromVoice ? say : speakText;
     const latestAnswers = answersRef.current;
-    const hasRequired = REQUIRED_KEYS.every((key) => String(latestAnswers[key] || '').trim());
+    const missingLabels = missingRequiredIndexes(latestAnswers).map((index) => INTERVIEW_FIELDS[index].label);
 
-    if (!hasRequired) {
-      toast.warning('Please complete the required information first.');
-      speakText('Some required information is still missing. Let us review your answers again.', () =>
-        startVoiceReview?.()
-      );
-      return;
+    if (missingLabels.length) {
+      toast.warning(`Please complete: ${missingLabels.join(', ')}`);
+      if (fromVoice) return 'missing';
+      setStep('review');
+      tell(`I still need your ${missingLabels.join(', ').toLowerCase()}. Please fill them in on the screen.`);
+      return 'review';
     }
+
+    // Every stop below moves to the manual review page and says so: no dead end.
+    const stopAtReview = (message) => {
+      setIsIssuing(false);
+      setPhase(PHASE.RETRY);
+      setStep('review');
+      tell(message);
+      return 'review';
+    };
 
     setIsIssuing(true);
     setPhase(PHASE.ISSUING);
-    setStatusMessage('Checking every answer...');
+    setStatusMessage('Checking your details…');
     let payload = null;
 
     // Re-check all answers (manual edits on the review page included) before issuing.
@@ -2411,13 +2676,9 @@ const NewApplication = () => {
         );
         const labels = Object.keys(problems).map((key) => FIELD_MAP[key]?.label || key).join(', ');
         setReviewErrors(problems);
-        setIsIssuing(false);
-        setPhase(PHASE.RETRY);
         setStatusMessage(`Please check: ${labels}`);
-        setStep('review');
         toast.error(`Please check: ${labels}`);
-        speakText(`Some answers need to be checked: ${labels}. Please look at the screen.`);
-        return;
+        return stopAtReview(`Some answers need to be checked: ${labels}. I moved you to the review page. Please look at the screen.`);
       }
       checkedAnswers = Object.fromEntries(Object.entries(data.results).map(([key, r]) => [key, r.value ?? '']));
       answersRef.current = checkedAnswers;
@@ -2426,22 +2687,22 @@ const NewApplication = () => {
     } catch (error) {
       if (error.response?.status === 401) {
         setIsIssuing(false);
-        return;
+        return 'auth';
       }
       console.warn('Answer check unavailable; using the basic checks only:', error);
     }
-    setStatusMessage('Issuing your Cedula...');
 
     try {
       const formData = buildApplicantData(checkedAnswers);
       const validationErrors = validateFormData(formData);
       if (validationErrors.length > 0) {
         toast.error(`Validation errors:\n${validationErrors.join('\n')}`);
-        setIsIssuing(false);
-        setPhase(PHASE.RETRY);
-        speakText('I found some issues with your information. Please check the details below.');
-        return;
+        return stopAtReview('I found some issues with your information. I moved you to the review page. Please check the details on the screen.');
       }
+
+      // Every check passed: only now say that the application is being saved.
+      setStatusMessage(SAVING_LINE);
+      tell(SAVING_LINE);
 
       const income = parseFloat(formData.gross_annual_income) || 0;
       const taxResult = await extractionAPI.computeTax(income);
@@ -2457,12 +2718,9 @@ const NewApplication = () => {
       const issuedCtc = result.data?.ctc_number;
       if (!issuedCtc) throw new Error('The server did not return a CTC number.');
 
-      setCtcNumber(issuedCtc);
-      setStatusMessage('Preparing the PDF for printing...');
-      const pdfResponse = await formsAPI.download(issuedCtc);
-      downloadAndPrintPdf(pdfResponse.data, issuedCtc);
-
-      toast.success(`CTC ${issuedCtc} issued successfully.`);
+      // Saved with its CTC number and PDF, but nothing is downloaded or printed here:
+      // the admin prints it at the counter from Records (plan 001.3).
+      toast.success('Application saved.');
       setSurvey({
         open: true,
         transactionId: result.data?.id ?? null,
@@ -2472,39 +2730,34 @@ const NewApplication = () => {
       });
       setStep('success');
       setPhase(PHASE.IDLE);
-      speakText('Your Community Tax Certificate has been issued and downloaded. Thank you, and have a good day.');
+      tell(COUNTER_LINE);
+      return 'issued';
     } catch (error) {
+      if (error.response?.status === 401) return 'auth';
       console.error('Issue error:', error);
       console.error('Issue response:', error.response?.status, error.response?.data);
       console.error('Request payload:', payload);
 
       const errorDetail = error.response?.data?.detail;
       if (Array.isArray(errorDetail)) {
-        const msgs = errorDetail.map((err) => `${err.loc?.join('.') || 'unknown'}: ${err.msg}`);
-        toast.error(`Validation errors:\n${msgs.join('\n')}`);
+        // e.g. the server's 422 for a blank required field: mark those fields on the review page.
+        const toFormKey = { date_of_birth: 'date', height_cm: 'height', weight_kg: 'weight' };
+        const fieldErrors = Object.fromEntries(errorDetail
+          .filter((err) => err.loc?.[1] === 'applicant_data' && err.loc?.[2])
+          .map((err) => [toFormKey[err.loc[2]] || err.loc[2], err.msg]));
+        if (Object.keys(fieldErrors).length) setReviewErrors(fieldErrors);
+        toast.error(`Validation errors:\n${errorDetail.map((err) => err.msg).join('\n')}`);
       } else if (typeof errorDetail === 'string') {
         toast.error(errorDetail);
       } else {
-        toast.error(getApiErrorMessage(error, 'Unable to issue the Cedula. Please check all fields.'));
+        toast.error(getApiErrorMessage(error, 'Unable to save the application. Please check all fields.'));
       }
-      setPhase(PHASE.RETRY);
-      speakText("I ran into a problem issuing the certificate. Let's check the details, or ask staff for help.");
+      return stopAtReview('I could not save your application. I moved you to the review page. Please check the details on the screen and try again.');
     } finally {
       setIsIssuing(false);
       setStatusMessage('Ready');
     }
   }, [speakText, inputMethod]);
-
-  const printIssuedCtc = useCallback(async (numberToPrint) => {
-    try {
-      const pdfResponse = await formsAPI.download(numberToPrint);
-      downloadAndPrintPdf(pdfResponse.data, numberToPrint);
-      toast.success('PDF opened for printing.');
-    } catch (error) {
-      console.error('Print error:', error);
-      toast.error('Unable to open the Cedula PDF for printing.');
-    }
-  }, []);
 
   // ── Reset ──
   const resetInterview = useCallback(() => {
@@ -2512,13 +2765,13 @@ const NewApplication = () => {
     setCurrentFieldIndex(0);
     setAnswers({});
     setDraftAnswer('');
-    setCtcNumber('');
     setFieldError('');
     setReviewErrors({});
     setConsentGiven(false);   // the next applicant sees the privacy notice again
     setSurvey({ open: false, transactionId: null, features: [] });
     setAwaitingConfirmation(false);
     setConfirmView(null);
+    setMissingView(null);
     setChatHistory([]);
     setStatusMessage('Ready');
     setPhase(PHASE.IDLE);
@@ -2534,6 +2787,7 @@ const NewApplication = () => {
     stopConversation,
     startVoiceReview,
     tapConfirm,
+    tapMissing,
   } = useConversationEngine({
     answers,
     currentFieldIndex,
@@ -2548,6 +2802,7 @@ const NewApplication = () => {
     addChatMessage,
     issueForm,
     setConfirmView,
+    setMissingView,
   });
 
   // ── Keyboard Shortcuts ──
@@ -2574,35 +2829,27 @@ const NewApplication = () => {
   // RENDER: Success State
   // ═══════════════════════════════════════════════════════════════
   if (step === 'success') {
+    // No CTC number here: at the counter the applicant only gives their name, and the
+    // admin prints the Cedula from Records. The line stays after the survey closes.
     return (
       <div className="max-w-lg mx-auto">
-        <div className="bg-white border border-gray-200 rounded-2xl p-10 text-center shadow-lg">
-          <div className="mx-auto mb-5 flex h-20 w-20 items-center justify-center rounded-full bg-emerald-100 text-emerald-600">
-            <FaCheck size={32} />
+        <Card accent="success" className="p-8 sm:p-10 text-center">
+          <div className="mx-auto mb-5 flex h-20 w-20 items-center justify-center rounded-full bg-[var(--color-success-light)] text-[var(--color-success)]">
+            <FaCheck size={32} aria-hidden="true" />
           </div>
-          <h1 className="text-3xl font-bold text-gray-900">Cedula Issued</h1>
-          <p className="mt-3 text-gray-600 text-lg">
-            CTC number{' '}
-            <span className="font-bold text-indigo-700 bg-indigo-50 px-2 py-0.5 rounded-md">{ctcNumber}</span>{' '}
-            was saved and the PDF was downloaded.
+          <h1 className="font-display text-2xl sm:text-3xl font-bold text-[var(--color-neutral-900)]">Application Saved</h1>
+          <p className="mt-3 text-lg font-medium text-[var(--color-neutral-800)] break-words" role="status">
+            {COUNTER_SCREEN_LINE}
           </p>
-          <div className="mt-8 flex flex-wrap justify-center gap-3">
-            {/* Records: the Dashboard is admin-only, so staff were bounced back here. */}
-            <button onClick={() => navigate('/records')} className="btn-secondary inline-flex items-center gap-2">
-              <FaArrowLeft /> Records
-            </button>
-            <button
-              onClick={() => printIssuedCtc(ctcNumber)}
-              disabled={!ctcNumber}
-              className="btn-success inline-flex items-center gap-2 disabled:opacity-50"
-            >
-              <FaPrint /> Print PDF
-            </button>
-            <button onClick={resetInterview} className="btn-primary inline-flex items-center gap-2">
-              <FaRegEdit /> New Application
-            </button>
+          <p className="mt-2 text-sm text-[var(--color-neutral-500)]">
+            At the counter, just give your name. Pay there and receive your printed Cedula.
+          </p>
+          <div className="mt-8 flex justify-center">
+            <Button size="lg" icon={FaRegEdit} onClick={resetInterview}>
+              New Application
+            </Button>
           </div>
-        </div>
+        </Card>
         <SusSurveyDialog
           open={survey.open}
           transactionId={survey.transactionId}
@@ -2617,17 +2864,46 @@ const NewApplication = () => {
   // RENDER: Voice Review State
   // ═══════════════════════════════════════════════════════════════
   if (step === 'voice-review') {
+    // The screen matches what the assistant says: missing answers first, and the
+    // "please confirm" line only once nothing required is blank.
+    const missingLabels = missingRequiredIndexes(answers).map((index) => INTERVIEW_FIELDS[index].label);
+    const readyToConfirm = awaitingConfirmation && missingLabels.length === 0 && !missingView;
     return (
-      <div className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_360px]">
+      <div className="grid grid-cols-1 gap-5 xl:grid-cols-[minmax(0,1fr)_360px]">
         {isIssuing && <IssuingOverlay message={statusMessage} />}
-        <div className="space-y-5">
+        <div className="space-y-5 min-w-0">
           <div>
-            <h1 className="text-2xl font-bold text-gray-900">Confirming Your Information</h1>
-            <p className="mt-1.5 text-sm text-gray-600 leading-relaxed">
-              Please check the <strong>Applicant Answers</strong>. Say <strong>"yes"</strong> if everything is
-              correct and the Cedula will be issued, or say a change such as <em>"change surname to Cruz."</em>
-            </p>
+            <h1 className="text-2xl font-bold text-[var(--color-neutral-900)]">Confirming Your Information</h1>
+            {missingLabels.length > 0 ? (
+              <p className="mt-1.5 text-sm text-[var(--color-neutral-600)] leading-relaxed">
+                A few required answers are still missing. Type them, or say them again.
+              </p>
+            ) : (
+              <p className="mt-1.5 text-sm text-[var(--color-neutral-600)] leading-relaxed">
+                Please check the <strong>Applicant Answers</strong>. Say <strong>"yes"</strong> if everything is
+                correct and your application will be saved, or say a change such as <em>"change surname to Cruz."</em>
+              </p>
+            )}
           </div>
+
+          {missingLabels.length > 0 && (
+            <div className="rounded-[var(--radius-lg)] border border-[var(--color-warning)] bg-[var(--color-warning-light)] p-4 text-sm text-[var(--color-neutral-800)] flex items-start gap-2" role="status">
+              <FaExclamationTriangle className="shrink-0 mt-0.5 text-[var(--color-warning)]" aria-hidden="true" />
+              <div className="min-w-0">
+                <span className="font-semibold">Still needed before saving:</span>{' '}
+                <span className="break-words">{missingLabels.join(', ')}</span>
+              </div>
+            </div>
+          )}
+
+          {isConversationActive && missingView && (
+            <MissingFieldPanel
+              view={missingView}
+              onType={() => tapMissing('type')}
+              onSay={() => tapMissing('say')}
+              onTyped={(text) => tapMissing('typed', text)}
+            />
+          )}
 
           {/* Chat History */}
           {chatHistory.length > 0 && (
@@ -2654,15 +2930,17 @@ const NewApplication = () => {
               <div className="min-w-0 flex-1">
                 <div className="mb-1 text-sm font-semibold text-indigo-700">Barangay Staff Assistant</div>
                 <div className="rounded-xl rounded-tl-none bg-gray-100 p-4 text-base font-medium text-gray-900">
-                  {awaitingConfirmation
+                  {readyToConfirm
                     ? 'Ready to issue your Cedula — please confirm.'
-                    : "I've collected the following information from our conversation."}
+                    : missingLabels.length > 0
+                      ? `I still need your ${missingLabels.join(', ').toLowerCase()}.`
+                      : "I've collected the following information from our conversation."}
                 </div>
                 <div className="mt-3 flex flex-wrap items-center gap-3">
                   <PhaseIndicator phase={phase} />
                   {isIssuing && (
-                    <span className="inline-flex items-center gap-2 text-sm font-medium text-gray-600">
-                      <LoadingSpinner size="sm" /> Issuing...
+                    <span className="inline-flex items-center gap-2 text-sm font-medium text-[var(--color-neutral-600)]">
+                      <LoadingSpinner size="sm" /> Please wait...
                     </span>
                   )}
                   <span className="text-sm text-gray-500">{statusMessage}</span>
@@ -2762,7 +3040,7 @@ const NewApplication = () => {
             <FaArrowLeft /> Back to Interview
           </button>
           <button
-            onClick={issueForm}
+            onClick={() => issueForm()}
             disabled={isIssuing || !canReview}
             className="btn-success inline-flex items-center gap-2 disabled:opacity-50"
           >
@@ -2777,7 +3055,7 @@ const NewApplication = () => {
   // RENDER: Interview State (Main)
   // ═══════════════════════════════════════════════════════════════
   return (
-    <div className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_360px]">
+    <div className="grid grid-cols-1 gap-5 xl:grid-cols-[minmax(0,1fr)_360px]">
       {isIssuing && <IssuingOverlay message={statusMessage} />}
       <ConsentNotice
         open={!consentGiven}
