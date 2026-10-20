@@ -1,4 +1,18 @@
-import { ADDRESS_PARTS, joinAddress } from './address';
+import { ADDRESS_PARTS, addressTownOf, joinAddress } from './address';
+
+describe('addressTownOf (plan 001.6.1)', () => {
+  test('an answered town without a PSGC code uses the unknown-town sentinel', () => {
+    expect(addressTownOf({ results: { address_town: { value: 'San Jose', normalized: '' } } })).toBe('0');
+  });
+
+  test('no town answer uses null', () => {
+    expect(addressTownOf({ results: {} })).toBeNull();
+  });
+
+  test('a known town keeps its PSGC code', () => {
+    expect(addressTownOf({ results: { address_town: { normalized: '1030500000' } } })).toBe('1030500000');
+  });
+});
 
 describe('joinAddress (plan 001.6)', () => {
   test('three parts become one address, purok first', () => {

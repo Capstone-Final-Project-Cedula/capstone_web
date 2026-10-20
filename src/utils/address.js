@@ -24,6 +24,12 @@ export const ADDRESS_PARTS = [
   },
 ];
 
+// No answer uses the office default; an answered town without a PSGC code must not.
+export const addressTownOf = (address) => {
+  const town = address.results.address_town;
+  return town ? town.normalized || '0' : null;
+};
+
 /**
  * { address_town, address_barangay, address_purok } answer results -> "Purok 2, Barangay Imbatug, Baungon, Bukidnon".
  * The barangay is written as the backend shows it ("Barangay Carmen", "Barangay 10"), the town with its province.

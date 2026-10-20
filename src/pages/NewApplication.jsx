@@ -28,7 +28,7 @@ import SusSurveyDialog from '../components/sus/SusSurveyDialog';
 import ConsentNotice from '../components/interview/ConsentNotice';
 import { combineSpelling, looksSpelled, titleCaseSpelled } from '../utils/spelling';
 import { isNoAnswer, isYesAnswer, normalizeReply } from '../utils/replies';
-import { ADDRESS_PARTS, joinAddress } from '../utils/address';
+import { ADDRESS_PARTS, addressTownOf, joinAddress } from '../utils/address';
 import { COUNTER_LINE, COUNTER_SCREEN_LINE } from '../utils/counterFlow';
 import { validateFormData } from '../utils/requiredFields';
 import { Keyboard, Mic } from 'lucide-react';
@@ -196,9 +196,6 @@ const questionOf = (address, fieldIndex) => (isAddressPartOf(address, fieldIndex
   ? ADDRESS_PARTS[address.part]
   : INTERVIEW_FIELDS[fieldIndex]);
 const attemptKeyOf = (address, fieldIndex) => (isAddressPartOf(address, fieldIndex) ? ADDRESS_PARTS[address.part].key : fieldIndex);
-// The town already answered (PSGC code), sent with the barangay question.
-const addressTownOf = (address) => address.results.address_town?.normalized || null;
-
 const RETRY_PHRASES = [
   "I didn't quite catch that. Could you say it again?",
   "Sorry, I missed that. One more time, please?",
