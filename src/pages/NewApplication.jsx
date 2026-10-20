@@ -28,6 +28,7 @@ import SusSurveyDialog from '../components/sus/SusSurveyDialog';
 import ConsentNotice from '../components/interview/ConsentNotice';
 import { combineSpelling, looksSpelled, titleCaseSpelled } from '../utils/spelling';
 import { isNoAnswer, isYesAnswer, normalizeReply } from '../utils/replies';
+import { ADDRESS_PARTS, joinAddress } from '../utils/address';
 import { COUNTER_LINE, COUNTER_SCREEN_LINE } from '../utils/counterFlow';
 import { validateFormData } from '../utils/requiredFields';
 import { Keyboard, Mic } from 'lucide-react';
@@ -187,6 +188,16 @@ const nextFieldIndex = (index, answers) => {
   if (INTERVIEW_FIELDS[next]?.key === 'icr_no' && isFilipino(answers)) next += 1;
   return next;
 };
+
+// The address is asked in 3 parts by voice (plan 001.6). `address` = { active, part, results }.
+const isAddressPartOf = (address, fieldIndex) => INTERVIEW_FIELDS[fieldIndex]?.key === 'address' && address.active;
+// The question being asked: the field itself, or the address part in progress.
+const questionOf = (address, fieldIndex) => (isAddressPartOf(address, fieldIndex)
+  ? ADDRESS_PARTS[address.part]
+  : INTERVIEW_FIELDS[fieldIndex]);
+const attemptKeyOf = (address, fieldIndex) => (isAddressPartOf(address, fieldIndex) ? ADDRESS_PARTS[address.part].key : fieldIndex);
+// The town already answered (PSGC code), sent with the barangay question.
+const addressTownOf = (address) => address.results.address_town?.normalized || null;
 
 const RETRY_PHRASES = [
   "I didn't quite catch that. Could you say it again?",
@@ -432,9 +443,9 @@ const localInterpret = (key, text) => {
  * places) and regex (dates, numbers, choices) and rejects answers that do not
  * fit the question. Falls back to localInterpret if the backend is unreachable.
  */
-const interpretAnswer = async (key, text, { spoken = false } = {}) => {
+const interpretAnswer = async (key, text, { spoken = false, town = null } = {}) => {
   try {
-    const { data } = await extractionAPI.understandAnswer(key, String(text || ''), spoken);
+    const { data } = await extractionAPI.understandAnswer(key, String(text || ''), spoken, town);
     return data;
   } catch (error) {
     if (error.response?.status === 401) throw error;
@@ -964,7 +975,7 @@ function useWhisperListener() {
     streamRef.current = null;
   }, []);
 
-  const listenOnce = useCallback(async ({ fieldKey, onStart, onTranscribing, onEnd, onError, vad }) => {
+  const listenOnce = useCallback(async ({ fieldKey, town, onStart, onTranscribing, onEnd, onError, vad }) => {
     const cfg = { ...VAD, ...(vad || {}) };   // e.g. spelling allows longer pauses between letters
     let stream;
     let ctx;
@@ -1047,7 +1058,7 @@ function useWhisperListener() {
         const wav = await convertRecordingToWav(new Blob(chunks, { type: mimeType || 'audio/webm' }));
         const file = new File([wav], 'answer.wav', { type: 'audio/wav' });
         const t0 = performance.now();
-        const { data } = await speechAPI.transcribe(file, fieldKey, { timeout: 20000 });
+        const { data } = await speechAPI.transcribe(file, fieldKey, { timeout: 20000, town });
         onEnd?.((data.transcript || '').trim(), {
           engine: 'whisper',
           seconds: Math.round((performance.now() - t0) / 100) / 10,
@@ -1092,6 +1103,7 @@ function useConversationEngine({
   issueForm,
   setConfirmView,
   setMissingView,
+  setAddressPart,
 }) {
   const { isSpeaking, speak: rawSpeak, cancel: cancelSpeech } = useSpeechSynthesis();
   const browser = useBrowserSpeechRecognition();
@@ -1168,7 +1180,9 @@ function useConversationEngine({
     setConfirmView(null);
     missingTurnRef.current += 1;
     setMissingView(null);
-  }, [cancelSpeech, stopBrowserListening, whisper, setStatusMessage, setPhase, setConfirmView, setMissingView]);
+    addressRef.current = { active: false, part: 0, results: {} };   // a resumed address starts at the town
+    setAddressPart(null);
+  }, [cancelSpeech, stopBrowserListening, whisper, setStatusMessage, setPhase, setConfirmView, setMissingView, setAddressPart]);
 
   // The conversation is over (Cedula saved, or moved to the manual review page): stop
   // listening and free the microphone, but let the last spoken line finish.
@@ -1181,7 +1195,9 @@ function useConversationEngine({
     setConfirmView(null);
     missingTurnRef.current += 1;
     setMissingView(null);
-  }, [stopBrowserListening, whisper, setConfirmView, setMissingView]);
+    addressRef.current = { active: false, part: 0, results: {} };
+    setAddressPart(null);
+  }, [stopBrowserListening, whisper, setConfirmView, setMissingView, setAddressPart]);
 
   // Where to continue after the applicant went back to an earlier question by voice.
   const resumeIndexRef = useRef(null);
@@ -1225,12 +1241,18 @@ function useConversationEngine({
     setAnswers((prev) => ({ ...prev, [field.key]: value }));
   }, [setAnswers, setDraftAnswer]);
 
+  // The address is asked in 3 short questions (plan 001.6): town or city, barangay, purok or street.
+  // `active` while those questions run; each confirmed answer is kept in `results` and they are joined
+  // into the one address answer after the last one.
+  const addressRef = useRef({ active: false, part: 0, results: {} });
+
   // How many times each question was answered with something unusable.
   const attemptsRef = useRef({});
   const MAX_ATTEMPTS = 3;
   const countAttempt = (fieldIndex) => {
-    attemptsRef.current[fieldIndex] = (attemptsRef.current[fieldIndex] || 0) + 1;
-    return attemptsRef.current[fieldIndex];
+    const key = attemptKeyOf(addressRef.current, fieldIndex);
+    attemptsRef.current[key] = (attemptsRef.current[key] || 0) + 1;
+    return attemptsRef.current[key];
   };
 
   // The on-screen confirmation panel (see confirmAnswer).
@@ -1249,23 +1271,31 @@ function useConversationEngine({
 
   const askQuestion = useCallback((fieldIndex = currentFieldIndexRef.current) => {
     const field = INTERVIEW_FIELDS[fieldIndex];
+    if (field.key === 'address' && !addressRef.current.active) {
+      // Starting the address (again): from the town question.
+      addressRef.current = { active: true, part: 0, results: {} };
+      ADDRESS_PARTS.forEach((p) => { attemptsRef.current[p.key] = 0; });
+    }
+    const asked = questionOf(addressRef.current, fieldIndex);
     clearConfirmView();
     currentFieldIndexRef.current = fieldIndex;
     setCurrentFieldIndex(fieldIndex);
-    setDraftAnswer(answersRef.current[field.key] || '');
+    setAddressPart(field.key === 'address' ? asked : null);
+    setDraftAnswer(field.key === 'address' ? '' : answersRef.current[field.key] || '');
     setAwaitingConfirmation(false);
     setPhase(PHASE.ASKING);
-    setStatusMessage(`Asking about your ${field.label.toLowerCase()}`);
-    addChatMessage('assistant', field.question);
-    speak(field.question, () => listenForAnswer(fieldIndex));
-  }, [speak, clearConfirmView, setCurrentFieldIndex, setDraftAnswer, setAwaitingConfirmation, setStatusMessage, setPhase, addChatMessage]);
+    setStatusMessage(`Asking about your ${asked.label.toLowerCase()}`);
+    addChatMessage('assistant', asked.question);
+    speak(asked.question, () => listenForAnswer(fieldIndex));
+  }, [speak, clearConfirmView, setCurrentFieldIndex, setAddressPart, setDraftAnswer, setAwaitingConfirmation, setStatusMessage, setPhase, addChatMessage]);
 
   // Whisper -> (handleSpokenAnswer) DistilBERT + Regex -> voice read-back.
   const listenForAnswer = useCallback((fieldIndex) => {
     if (!conversationActiveRef.current) return;
-    const field = INTERVIEW_FIELDS[fieldIndex];
+    const asked = questionOf(addressRef.current, fieldIndex);
     listenOnce({
-      fieldKey: field.key,   // Whisper gets a hint for this question (e.g. Baungon barangays)
+      fieldKey: asked.key,   // Whisper gets a hint for this question (e.g. the barangays of the town said)
+      town: asked.key === 'address_barangay' ? addressTownOf(addressRef.current) : null,
       onStart: () => {
         setVoiceError('');
         setPhase(PHASE.LISTENING);
@@ -1297,6 +1327,27 @@ function useConversationEngine({
   // Save a confirmed answer and go to the next question.
   const acceptAnswer = useCallback((fieldIndex, result) => {
     const field = INTERVIEW_FIELDS[fieldIndex];
+    if (isAddressPartOf(addressRef.current, fieldIndex)) {
+      // One part of the address confirmed: ask the next part, or join the three into the address.
+      const address = addressRef.current;
+      const part = ADDRESS_PARTS[address.part];
+      attemptsRef.current[part.key] = 0;
+      address.results[part.key] = result;
+      clearConfirmView();
+      addChatMessage('assistant', `${part.label}: ${result.display || result.value || 'none'}`);
+      if (address.part < ADDRESS_PARTS.length - 1) {
+        address.part += 1;
+        setStatusMessage('Next question...');
+        window.setTimeout(() => {
+          if (conversationActiveRef.current) askQuestion(fieldIndex);
+        }, 150);
+        return;
+      }
+      const joined = joinAddress(address.results);
+      addressRef.current = { active: false, part: 0, results: {} };
+      setAddressPart(null);
+      result = { ...result, value: joined, display: joined };
+    }
     attemptsRef.current[fieldIndex] = 0;
     missingRetryRef.current.delete(fieldIndex);
     clearConfirmView();
@@ -1304,7 +1355,7 @@ function useConversationEngine({
     addChatMessage('assistant', `${field.label}: ${result.display || result.value || 'none'}`);
     setStatusMessage('Next question...');
     moveToNextQuestion();
-  }, [saveSpokenAnswer, moveToNextQuestion, clearConfirmView, setStatusMessage, addChatMessage]);
+  }, [saveSpokenAnswer, moveToNextQuestion, askQuestion, clearConfirmView, setStatusMessage, setAddressPart, addChatMessage]);
 
   // Too many unusable answers: leave the field blank instead of looping forever. Before the
   // final "yes" the applicant is asked for it again (type it or say it again). If speaking
@@ -1312,6 +1363,10 @@ function useConversationEngine({
   const giveUpOnField = useCallback((fieldIndex) => {
     const field = INTERVIEW_FIELDS[fieldIndex];
     attemptsRef.current[fieldIndex] = 0;
+    if (field.key === 'address') {
+      addressRef.current = { active: false, part: 0, results: {} };   // asked again from the town question
+      setAddressPart(null);
+    }
     clearConfirmView();
     if (missingRetryRef.current.has(fieldIndex)) {
       missingRetryRef.current.delete(fieldIndex);
@@ -1322,13 +1377,20 @@ function useConversationEngine({
     const msg = `Let's skip your ${spokenLabel(field)} for now. We will come back to it at the end.`;
     addChatMessage('assistant', msg);
     speak(msg, moveToNextQuestion);
-  }, [speak, moveToNextQuestion, clearConfirmView, addChatMessage]);
+  }, [speak, moveToNextQuestion, clearConfirmView, setAddressPart, addChatMessage]);
 
   // "Go back", "go back to my address", "change my surname": ask that question again,
   // then continue where the interview was. Returns true when the reply was such a request.
   const handleNavigation = useCallback((reply, fromIndex) => {
     const nav = parseNavigation(reply);
     if (!nav) return false;
+    if (nav.type === 'back' && isAddressPartOf(addressRef.current, fromIndex) && addressRef.current.part > 0) {
+      // "Go back" at the barangay or purok question: the address part before it.
+      addressRef.current.part -= 1;
+      askQuestion(fromIndex);
+      return true;
+    }
+    addressRef.current = { active: false, part: 0, results: {} };   // an address asked again starts at the town
     let target = nav.type === 'goto' ? nav.index : fromIndex - 1;
     if (nav.type === 'back' && INTERVIEW_FIELDS[target]?.key === 'icr_no' && isFilipino(answersRef.current)) target -= 1;
     if (target < 0) {
@@ -1359,7 +1421,7 @@ function useConversationEngine({
     pendingConfirmRef.current = { fieldIndex, result };
     setConfirmView({
       mode: 'confirm',
-      label: field.label,
+      label: questionOf(addressRef.current, fieldIndex).label,
       value: shown,
       // Letter tiles only where spelling matters (names, places), not for dates or numbers.
       letters: SPELLABLE_KEYS.has(field.key) ? String(result.value || '') : '',
@@ -1387,7 +1449,7 @@ function useConversationEngine({
       return;
     }
     clearConfirmView();
-    const msg = `Okay. Please say your ${field.label.toLowerCase().replace(/\s*\(.*\)/, '')} again.`;
+    const msg = `Okay. Please say your ${questionOf(addressRef.current, fieldIndex).label.toLowerCase().replace(/\s*\(.*\)/, '')} again.`;
     addChatMessage('assistant', msg);
     speak(msg, () => listenForAnswer(fieldIndex));
   }, [speak, giveUpOnField, clearConfirmView, addChatMessage]);
@@ -1548,9 +1610,10 @@ function useConversationEngine({
 
   const handleSpokenAnswer = useCallback(async (fieldIndex, transcript, heardBy = {}) => {
     const field = INTERVIEW_FIELDS[fieldIndex];
+    const asked = questionOf(addressRef.current, fieldIndex);   // the field, or the address part being asked
     const spokenValue = transcript.trim();
 
-    if (!spokenValue && !field.optional) {
+    if (!spokenValue && !asked.optional) {
       if (countAttempt(fieldIndex) >= MAX_ATTEMPTS) {
         giveUpOnField(fieldIndex);
         return;
@@ -1568,7 +1631,10 @@ function useConversationEngine({
 
     let result;
     try {
-      result = await interpretAnswer(field.key, spokenValue, { spoken: true });
+      result = await interpretAnswer(asked.key, spokenValue, {
+        spoken: true,
+        town: asked.key === 'address_barangay' ? addressTownOf(addressRef.current) : null,
+      });
     } catch {
       return; // session expired: the API client sends the user to the login page
     }
@@ -1594,8 +1660,8 @@ function useConversationEngine({
       return;
     }
 
-    // "None" for an optional question (no middle name, no ICR) needs no confirmation.
-    if (!result.value && field.optional) {
+    // "None" for an optional question (no middle name, no ICR, no purok) needs no confirmation.
+    if (!result.value && asked.optional) {
       acceptAnswer(fieldIndex, result);
       return;
     }
@@ -1640,7 +1706,8 @@ function useConversationEngine({
       .map((v) => `${v}. Is that correct?`);
     const spellPrompts = INTERVIEW_FIELDS.filter((f) => SPELLABLE_KEYS.has(f.key))
       .map((f) => `Please spell your ${f.label.toLowerCase().replace(/\s*\(.*\)/, '')}.`);
-    window.setTimeout(() => prefetchSpeech(...INTERVIEW_FIELDS.map((f) => f.question), REVIEW_PROMPT), 300);
+    window.setTimeout(() => prefetchSpeech(...INTERVIEW_FIELDS.map((f) => f.question), ...ADDRESS_PARTS.map((p) => p.question),
+      REVIEW_PROMPT), 300);
     window.setTimeout(() => prefetchSpeech(...knownReadBacks, ...spellPrompts, 'Please say yes or no.'), 2500);
 
     if (!alreadyAnswered && startIndex === 0) {
@@ -2281,6 +2348,8 @@ const NewApplication = () => {
   // { key, label, hint, mode: 'choice' | 'typing', allowSay, error, checking } while a
   // required answer that is still blank is asked for again before the final "yes"
   const [missingView, setMissingView] = useState(null);
+  // The address part being asked by voice ({ key, label, question, hint }; plan 001.6), else null
+  const [addressPart, setAddressPart] = useState(null);
   const [statusMessage, setStatusMessage] = useState('Ready');
   const [phase, setPhase] = useState(PHASE.IDLE);
   const [voiceError, setVoiceError] = useState('');
@@ -2788,7 +2857,13 @@ const NewApplication = () => {
     issueForm,
     setConfirmView,
     setMissingView,
+    setAddressPart,
   });
+
+  // What the question card shows: during the voice interview the address is asked in 3 parts.
+  const askedField = isConversationActive && currentField.key === 'address' && addressPart
+    ? { ...currentField, ...addressPart }
+    : currentField;
 
   // ── Keyboard Shortcuts ──
   useEffect(() => {
@@ -3121,7 +3196,7 @@ const NewApplication = () => {
               <div className="min-w-0 flex-1">
                 <div className="mb-1 text-sm font-semibold text-indigo-700">Barangay Staff Assistant</div>
                 <div className="rounded-xl rounded-tl-none bg-gray-100 p-4 text-lg font-medium text-gray-900 leading-relaxed">
-                  {currentField.question}
+                  {askedField.question}
                 </div>
                 <div className="mt-3 flex flex-wrap items-center gap-2">
                   {!isConversationActive ? (
@@ -3159,7 +3234,7 @@ const NewApplication = () => {
           {/* Input Area */}
           <div className="p-5">
             <label className="mb-2 block text-sm font-medium text-gray-700" htmlFor="answer-input">
-              {currentField.label}
+              {askedField.label}
             </label>
             <textarea
               id="answer-input"
@@ -3171,9 +3246,9 @@ const NewApplication = () => {
                 if (fieldError) setFieldError('');
               }}
               rows={4}
-              placeholder={currentField.hint}
+              placeholder={askedField.hint}
               className={`input-field resize-none text-base w-full ${fieldError ? '!border-rose-400' : ''}`}
-              aria-label={`Answer for ${currentField.label}`}
+              aria-label={`Answer for ${askedField.label}`}
               aria-invalid={Boolean(fieldError)}
               disabled={isConversationActive}
             />
