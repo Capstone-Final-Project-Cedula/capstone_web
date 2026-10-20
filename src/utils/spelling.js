@@ -92,19 +92,22 @@ export const applySpelling = (current, transcript) => {
 };
 
 const LEADING_NO = /^\s*(?:no|nope|hindi|mali|wrong|not)[\s,.!-]+/i;
+// A reply that starts like this adds to (or edits) the spelling so far instead of replacing it.
+const CONTINUE_START = /^\s*(?:space|espasyo|next word|dash|hyphen|delete|erase|backspace|undo|remove|bura|burahin|and|then|plus|continue|add|dugang)\b/i;
 
 /**
- * Merge a spelled reply into the spelling so far, favouring what the applicant
- * meant: "No, O R D I Z" or a full re-spelling (same first letter, about as long)
- * replaces it; a short chunk after a pause ("I, Z") continues it.
+ * Merge a spelled reply into the spelling so far. A new spelling replaces the old one,
+ * whatever its first letter ("A R D I Z" heard wrong, then "O R D I Z" -> "ordiz", never
+ * "ardizordiz"; plan 001.6). Only a reply that starts with "space", "and", "delete", ...
+ * continues or edits it ("space A N N" -> "mary ann").
  */
 export const combineSpelling = (current, transcript) => {
   const cleaned = String(transcript || '').replace(LEADING_NO, '');
-  const fresh = applySpelling('', cleaned).text;
   const prev = String(current || '').trim();
-  if (!prev || LEADING_NO.test(String(transcript || ''))) return fresh;
-  if (fresh && fresh[0] === prev[0] && fresh.length >= Math.ceil(prev.length * 0.6)) return fresh;
-  return applySpelling(prev, cleaned).text;
+  if (prev && !LEADING_NO.test(String(transcript || '')) && CONTINUE_START.test(cleaned)) {
+    return applySpelling(prev, cleaned.replace(/^\s*(?:and|then|plus|continue|add|dugang)\b/i, ' ')).text;
+  }
+  return applySpelling('', cleaned).text;
 };
 
 /** "dela cruz" -> "D, E, L, A, space, C, R, U, Z" (how the assistant reads it back). */

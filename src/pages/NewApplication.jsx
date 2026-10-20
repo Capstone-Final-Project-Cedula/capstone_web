@@ -27,6 +27,7 @@ import LoadingSpinner from '../components/common/LoadingSpinner';
 import SusSurveyDialog from '../components/sus/SusSurveyDialog';
 import ConsentNotice from '../components/interview/ConsentNotice';
 import { combineSpelling, looksSpelled, titleCaseSpelled } from '../utils/spelling';
+import { isNoAnswer, isYesAnswer, normalizeReply } from '../utils/replies';
 import { COUNTER_LINE, COUNTER_SCREEN_LINE } from '../utils/counterFlow';
 import { validateFormData } from '../utils/requiredFields';
 import { Keyboard, Mic } from 'lucide-react';
@@ -240,27 +241,7 @@ const isSpeechSupported = () => Boolean(getSpeechRecognition());
 const isBlankAnswer = (value) =>
   /^(none|no|not applicable|n\/a|blank|skip|wala|wala po|no middle name)$/i.test(String(value || '').trim().replace(/[.!]$/, ''));
 
-// Lowercase, drop punctuation and the polite "po"/"opo" so "Yes po." and "Opo" both count.
-const normalizeReply = (value) =>
-  String(value || '').toLowerCase().replace(/[.,!?]/g, ' ').replace(/\b(po|ho)\b/g, ' ').replace(/\s+/g, ' ').trim();
-
-// Includes how Whisper writes a short Filipino "oo" ("Oop", "Oof", "Ooh").
-const YES_START = /^(yes|yeah|yep|yup|yah|ya|correct|right|that is correct|that's correct|that's right|it is correct|it's correct|spelling is correct|okay|ok|sure|confirm|confirmed|proceed|go ahead|opo|oo|ooh|oop|oof|oho|tama|sige|ayos)\b/;
-const NEGATION = /\b(no|not|nope|hindi|mali|wrong|incorrect|but|pero|change|wait)\b/;
-
-// "Yes.", "Yes. Yes.", "Yes, that's correct po", "Oo, tama" all count as yes; anything that
-// also says no / but / change does not.
-const isYesAnswer = (value) => {
-  const reply = normalizeReply(value);
-  return YES_START.test(reply) && !NEGATION.test(reply) && reply.split(' ').length <= 6;
-};
-
-// Includes how Whisper writes "mali" and "hindi po" ("Malay", "Molly", "Hindipa", "In people").
-const isNoAnswer = (value) => {
-  const reply = normalizeReply(value);
-  return /^(no|nope|not correct|that is wrong|that's wrong|incorrect|wrong|cancel|stop|don't|do not|nevermind|hindi\w*|mali|malay|malin|malih|molly|hindi tama|di|in people|in deeper)\b/.test(reply)
-    && reply.split(' ').length <= 4;
-};
+// normalizeReply, isYesAnswer and isNoAnswer live in utils/replies.js (tested there; plan 001.6).
 
 const TEXT_TITLE_CASE_FIELDS = new Set([
   'surname',
@@ -1435,12 +1416,16 @@ function useConversationEngine({
           return;
         }
         addChatMessage('user', reply);
-        if (handleNavigation(reply, fieldIndex)) return;   // "go back", "change my address"
-        const spellable = SPELLABLE_KEYS.has(INTERVIEW_FIELDS[fieldIndex].key);
+        // A clear yes wins over navigation words heard in the same reply ("Yes. Go back."); only a
+        // reply that is just "go back" / "change my address" moves (plan 001.6).
         if (isYesAnswer(reply)) {
           spelledRef.current = '';
           acceptAnswer(fieldIndex, result);
-        } else if (spellable && looksSpelled(reply)) {
+          return;
+        }
+        if (handleNavigation(reply, fieldIndex)) return;
+        const spellable = SPELLABLE_KEYS.has(INTERVIEW_FIELDS[fieldIndex].key);
+        if (spellable && looksSpelled(reply)) {
           // Letters instead of yes/no: they are spelling it (or adding to their spelling).
           spelledRef.current = combineSpelling(spelledRef.current, reply);
           finishSpelling(fieldIndex);
