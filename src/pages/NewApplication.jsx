@@ -1724,16 +1724,18 @@ function useConversationEngine({
     // Only a basic check (e.g. a name cannot have digits); the spelled value itself is
     // kept exactly as spelled, never "corrected" by the system.
     let result;
+    const turn = confirmTurnRef.current;   // a tap (pick, skip, another typed answer) while checking wins
     try {
       // Spelled by voice, a place of birth is checked like a spoken one: only a list place, never offline.
       result = await interpretAnswer(field.key, spelledValue, { spoken: field.key === 'place_of_birth' && !typed });
     } catch {
       return;
     }
-    if (!conversationActiveRef.current) return;
+    if (!conversationActiveRef.current || turn !== confirmTurnRef.current) return;
     practice.rec.heard(field.key, { text: letters, engine: typed ? 'typed' : 'spelled' });
     practice.rec.parsed(field.key, result);
-    if (!result.ok && result.reason !== 'unclear') {
+    // "Sorry" / "What?" while spelling a place is not a place either (only names keep the unclear pass).
+    if (!result.ok && (result.reason !== 'unclear' || field.key === 'place_of_birth')) {
       if (typed) {
         // Typed in the box: say why and keep the box open (a date or number is not spelled).
         setConfirmView((view) => (view ? { ...view, error: result.message } : view));
@@ -2236,7 +2238,10 @@ function useConversationEngine({
         // Check each corrected value the same way as during the interview.
         let checked;
         try {
-          checked = await Promise.all(corrections.map(async (c) => ({ ...c, result: await interpretAnswer(c.key, c.value) })));
+          // A spoken place of birth must be a list place, also as a correction (plan 001.8): talk is refused.
+          checked = await Promise.all(corrections.map(async (c) => ({
+            ...c, result: await interpretAnswer(c.key, c.value, { spoken: c.key === 'place_of_birth' }),
+          })));
         } catch {
           return;
         }
