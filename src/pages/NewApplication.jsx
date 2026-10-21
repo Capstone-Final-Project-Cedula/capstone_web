@@ -21,6 +21,7 @@ import {
 import { speechAPI } from '../api/speech';
 import { extractionAPI } from '../api/extraction';
 import { formsAPI } from '../api/forms';
+import { practiceLogAPI } from '../api/practiceLog';
 import apiClient from '../api/client';
 import { getApiErrorMessage } from '../api/errors';
 import LoadingSpinner from '../components/common/LoadingSpinner';
@@ -31,6 +32,7 @@ import { isNoAnswer, isYesAnswer, normalizeReply } from '../utils/replies';
 import { ADDRESS_PARTS, addressTownOf, joinAddress } from '../utils/address';
 import { COUNTER_LINE, COUNTER_SCREEN_LINE } from '../utils/counterFlow';
 import { validateFormData } from '../utils/requiredFields';
+import { createPracticeRecorder, createPracticeSession } from '../utils/practiceLog';
 import { Keyboard, Mic } from 'lucide-react';
 import Button from '../components/ui/Button';
 import Card from '../components/ui/Card';
@@ -680,6 +682,20 @@ const buildApplicantData = (answers) => {
 // validateFormData (the 6 required fields + income) lives in utils/requiredFields.js,
 // shared with the QR page and matching the server's 422 check (plan 001.4).
 
+// Temporary practice log (plan 001.7): a question's answer in the form the CTC saves it
+// (the birthday as the ISO date ...), so the backend compares it with the saved record.
+const PRACTICE_SAVED_FIELD = {
+  surname: 'surname', given_name: 'given_name', middle_name: 'middle_name', address: 'address',
+  date: 'date_of_birth', sex: 'sex', civil_status: 'civil_status', citizenship: 'citizenship',
+  icr_no: 'icr_number', place_of_birth: 'place_of_birth', height: 'height_cm', weight: 'weight_kg',
+  occupation: 'occupation', gross_annual_income: 'gross_annual_income',
+};
+const practiceSavedForm = (field, value) => {
+  const saved = PRACTICE_SAVED_FIELD[field];
+  if (!saved) return String(value ?? '').trim();          // an address part is never saved apart
+  return buildApplicantData({ [field]: value })[saved];
+};
+
 // ═══════════════════════════════════════════════════════════════
 // SECTION 5: PDF & Print Utilities
 // ═══════════════════════════════════════════════════════════════
@@ -1101,6 +1117,7 @@ function useConversationEngine({
   setConfirmView,
   setMissingView,
   setAddressPart,
+  practice,   // temporary practice log (plan 001.7): { session, rec }
 }) {
   const { isSpeaking, speak: rawSpeak, cancel: cancelSpeech } = useSpeechSynthesis();
   const browser = useBrowserSpeechRecognition();
@@ -1274,6 +1291,7 @@ function useConversationEngine({
       ADDRESS_PARTS.forEach((p) => { attemptsRef.current[p.key] = 0; });
     }
     const asked = questionOf(addressRef.current, fieldIndex);
+    practice.rec.asked(asked.key);   // practice log: the clock starts at the first ask only
     clearConfirmView();
     currentFieldIndexRef.current = fieldIndex;
     setCurrentFieldIndex(fieldIndex);
@@ -1284,7 +1302,7 @@ function useConversationEngine({
     setStatusMessage(`Asking about your ${asked.label.toLowerCase()}`);
     addChatMessage('assistant', asked.question);
     speak(asked.question, () => listenForAnswer(fieldIndex));
-  }, [speak, clearConfirmView, setCurrentFieldIndex, setAddressPart, setDraftAnswer, setAwaitingConfirmation, setStatusMessage, setPhase, addChatMessage]);
+  }, [speak, clearConfirmView, setCurrentFieldIndex, setAddressPart, setDraftAnswer, setAwaitingConfirmation, setStatusMessage, setPhase, addChatMessage, practice]);
 
   // Whisper -> (handleSpokenAnswer) DistilBERT + Regex -> voice read-back.
   const listenForAnswer = useCallback((fieldIndex) => {
@@ -1308,6 +1326,7 @@ function useConversationEngine({
           return;
         }
         if (meta.error) {
+          practice.rec.heard(asked.key, { text: '', engine: meta.engine, reason: meta.error });
           if (countAttempt(fieldIndex) >= MAX_ATTEMPTS) {
             giveUpOnField(fieldIndex);
             return;
@@ -1319,7 +1338,7 @@ function useConversationEngine({
         handleSpokenAnswer(fieldIndex, heard, meta);
       },
     });
-  }, [listenOnce, speak, setDraftAnswer, setVoiceError, setStatusMessage, setPhase]);
+  }, [listenOnce, speak, setDraftAnswer, setVoiceError, setStatusMessage, setPhase, practice]);
 
   // Save a confirmed answer and go to the next question.
   const acceptAnswer = useCallback((fieldIndex, result) => {
@@ -1328,6 +1347,7 @@ function useConversationEngine({
       // One part of the address confirmed: ask the next part, or join the three into the address.
       const address = addressRef.current;
       const part = ADDRESS_PARTS[address.part];
+      practice.session.note(practice.rec.accept(part.key, result.value));
       attemptsRef.current[part.key] = 0;
       address.results[part.key] = result;
       clearConfirmView();
@@ -1345,6 +1365,7 @@ function useConversationEngine({
       setAddressPart(null);
       result = { ...result, value: joined, display: joined };
     }
+    practice.session.note(field.key === 'address' ? practice.rec.joined(result.value) : practice.rec.accept(field.key, result.value));
     attemptsRef.current[fieldIndex] = 0;
     missingRetryRef.current.delete(fieldIndex);
     clearConfirmView();
@@ -1352,13 +1373,14 @@ function useConversationEngine({
     addChatMessage('assistant', `${field.label}: ${result.display || result.value || 'none'}`);
     setStatusMessage('Next question...');
     moveToNextQuestion();
-  }, [saveSpokenAnswer, moveToNextQuestion, askQuestion, clearConfirmView, setStatusMessage, setAddressPart, addChatMessage]);
+  }, [saveSpokenAnswer, moveToNextQuestion, askQuestion, clearConfirmView, setStatusMessage, setAddressPart, addChatMessage, practice]);
 
   // Too many unusable answers: leave the field blank instead of looping forever. Before the
   // final "yes" the applicant is asked for it again (type it or say it again). If speaking
   // fails again on that second round, the text box opens on its own.
   const giveUpOnField = useCallback((fieldIndex) => {
     const field = INTERVIEW_FIELDS[fieldIndex];
+    practice.session.note(practice.rec.skip(questionOf(addressRef.current, fieldIndex).key));   // before the address resets
     attemptsRef.current[fieldIndex] = 0;
     if (field.key === 'address') {
       addressRef.current = { active: false, part: 0, results: {} };   // asked again from the town question
@@ -1374,7 +1396,7 @@ function useConversationEngine({
     const msg = `Let's skip your ${spokenLabel(field)} for now. We will come back to it at the end.`;
     addChatMessage('assistant', msg);
     speak(msg, moveToNextQuestion);
-  }, [speak, moveToNextQuestion, clearConfirmView, setAddressPart, addChatMessage]);
+  }, [speak, moveToNextQuestion, clearConfirmView, setAddressPart, addChatMessage, practice]);
 
   // "Go back", "go back to my address", "change my surname": ask that question again,
   // then continue where the interview was. Returns true when the reply was such a request.
@@ -1569,6 +1591,8 @@ function useConversationEngine({
       return;
     }
     if (!conversationActiveRef.current) return;
+    practice.rec.heard(field.key, { text: letters, engine: typed ? 'typed' : 'spelled' });
+    practice.rec.parsed(field.key, result);
     if (!result.ok && result.reason !== 'unclear') {
       const msg = `${result.message} Let's spell it again.`;
       addChatMessage('assistant', msg);
@@ -1582,7 +1606,7 @@ function useConversationEngine({
       return;
     }
     confirmAnswer(fieldIndex, kept);
-  }, [speak, confirmAnswer, acceptAnswer, addChatMessage]);
+  }, [speak, confirmAnswer, acceptAnswer, addChatMessage, practice]);
 
   // The Yes / No buttons and the type-it box on the confirmation panel. A tap ends the
   // voice turn in progress (speech and listening), then continues like a spoken reply.
@@ -1609,8 +1633,16 @@ function useConversationEngine({
     const field = INTERVIEW_FIELDS[fieldIndex];
     const asked = questionOf(addressRef.current, fieldIndex);   // the field, or the address part being asked
     const spokenValue = transcript.trim();
+    // Practice log: one try = what was heard, by which engine, and the Whisper seconds.
+    const recordHeard = () => practice.rec.heard(asked.key, {
+      text: spokenValue,
+      engine: heardBy.engine || engineRef.current,
+      seconds: heardBy.seconds,
+      reason: spokenValue ? null : (heardBy.reason || 'no-speech'),
+    });
 
     if (!spokenValue && !asked.optional) {
+      recordHeard();
       if (countAttempt(fieldIndex) >= MAX_ATTEMPTS) {
         giveUpOnField(fieldIndex);
         return;
@@ -1623,6 +1655,7 @@ function useConversationEngine({
 
     if (spokenValue && !heardBy.shown) addChatMessage('user', spokenValue);
     if (spokenValue && handleNavigation(spokenValue, fieldIndex)) return;   // "go back to my surname"
+    recordHeard();
     setPhase(PHASE.THINKING);
     setStatusMessage('Understanding your answer...');
 
@@ -1636,6 +1669,7 @@ function useConversationEngine({
       return; // session expired: the API client sends the user to the login page
     }
     if (!conversationActiveRef.current) return;
+    practice.rec.parsed(asked.key, result);
 
     if (!result.ok && result.reason === 'not_a_name' && SPELLABLE_KEYS.has(field.key)) {
       // "It's." / "Or these." is not a name: the name was not heard, so spell it.
@@ -1663,7 +1697,7 @@ function useConversationEngine({
       return;
     }
     confirmAnswer(fieldIndex, result);
-  }, [speak, askQuestion, acceptAnswer, confirmAnswer, giveUpOnField, setStatusMessage, setPhase, addChatMessage]);
+  }, [speak, askQuestion, acceptAnswer, confirmAnswer, giveUpOnField, setStatusMessage, setPhase, addChatMessage, practice]);
 
   // Get the microphone and switch the conversation on. Returns false when voice cannot run.
   const activateVoice = useCallback(async () => {
@@ -1746,6 +1780,7 @@ function useConversationEngine({
   // and "Say it again" is no longer offered (no endless loop).
   const openMissingTyping = useCallback((fieldIndex, { auto = false } = {}) => {
     const field = INTERVIEW_FIELDS[fieldIndex];
+    practice.rec.asked(field.key);   // practice log: typing a missing answer is timed from here
     missingTurnRef.current += 1;
     pendingMissingRef.current = fieldIndex;
     clearConfirmView();
@@ -1761,7 +1796,7 @@ function useConversationEngine({
       : `Okay. Please type your ${spokenLabel(field)} in the box on the screen.`;
     addChatMessage('assistant', msg);
     speak(msg);   // no listening: the applicant is typing
-  }, [speak, clearConfirmView, stopBrowserListening, setStep, setAwaitingConfirmation, setCurrentFieldIndex, setMissingView, setPhase, setStatusMessage, addChatMessage]);
+  }, [speak, clearConfirmView, stopBrowserListening, setStep, setAwaitingConfirmation, setCurrentFieldIndex, setMissingView, setPhase, setStatusMessage, addChatMessage, practice]);
 
   // "Say it again": the normal question with its normal retries, then back to the review.
   const sayMissingAgain = useCallback((fieldIndex) => {
@@ -1831,13 +1866,16 @@ function useConversationEngine({
       : result.value;
     addChatMessage('user', typed);
     addChatMessage('assistant', `${field.label}: ${SPELLABLE_KEYS.has(field.key) ? value : (result.display || value)}`);
+    practice.rec.heard(field.key, { text: typed, engine: 'typed' });
+    practice.rec.parsed(field.key, result);
+    practice.session.note(practice.rec.accept(field.key, value, 'typed'));
     saveSpokenAnswer(fieldIndex, value);
     attemptsRef.current[fieldIndex] = 0;
     missingRetryRef.current.delete(fieldIndex);
     pendingMissingRef.current = null;
     setMissingView(null);
     latestRef.current.startVoiceReview();
-  }, [speak, saveSpokenAnswer, setMissingView, addChatMessage]);
+  }, [speak, saveSpokenAnswer, setMissingView, addChatMessage, practice]);
 
   // The Type it / Say it again buttons and the text box. A tap ends the voice turn in progress.
   const tapMissing = useCallback((choice, typedValue = '') => {
@@ -2372,6 +2410,15 @@ const NewApplication = () => {
   const inputRef = useRef(null);
   const speechAudioRef = useRef(null);
   const speechSequenceRef = useRef(0);
+  // Temporary practice log (plan 001.7): the session and the note builder live as long as the page.
+  const practiceRef = useRef(null);
+  if (!practiceRef.current) {
+    practiceRef.current = {
+      session: createPracticeSession(practiceLogAPI),
+      rec: createPracticeRecorder({ savedForm: practiceSavedForm }),
+    };
+  }
+  const practice = practiceRef.current;
 
   // ── Memoized Values ──
   const currentField = INTERVIEW_FIELDS[currentFieldIndex];
@@ -2405,13 +2452,14 @@ const NewApplication = () => {
   // ── Cleanup on unmount ──
   useEffect(() => {
     return () => {
+      practice.session.finish();   // leaving before the CTC is issued: the practice session is "abandoned"
       speechSequenceRef.current += 1;
       window.speechSynthesis?.cancel();
       speechAudioRef.current?.pause();
       recognitionRef.current?.abort?.();
       streamRef.current?.getTracks().forEach((t) => t.stop());
     };
-  }, []);
+  }, [practice]);
 
   // ── Chat Helpers ──
   const addChatMessage = useCallback((role, text) => {
@@ -2763,11 +2811,13 @@ const NewApplication = () => {
         applicant_data: formData,
         input_method: inputMethod,
         raw_transcript: null,
+        ...(practice.session.id ? { practice_session_id: practice.session.id } : {}),
       };
 
       const result = await formsAPI.issue(payload);
       const issuedCtc = result.data?.ctc_number;
       if (!issuedCtc) throw new Error('The server did not return a CTC number.');
+      practice.session.issued();   // the backend ended the practice session; late notes still go out
 
       // Saved with its CTC number and PDF, but nothing is downloaded or printed here:
       // the admin prints it at the counter from Records (plan 001.3).
@@ -2808,10 +2858,12 @@ const NewApplication = () => {
       setIsIssuing(false);
       setStatusMessage('Ready');
     }
-  }, [speakText, inputMethod]);
+  }, [speakText, inputMethod, practice]);
 
   // ── Reset ──
   const resetInterview = useCallback(() => {
+    practice.session.finish();   // no-op when the CTC was issued
+    practice.rec.reset();
     setStep('interview');
     setCurrentFieldIndex(0);
     setAnswers({});
@@ -2829,7 +2881,7 @@ const NewApplication = () => {
     setVoiceError('');
     window.speechSynthesis?.cancel();
     speechAudioRef.current?.pause();
-  }, []);
+  }, [practice]);
 
   // ── Conversation Engine Hook ──
   const {
@@ -2855,6 +2907,7 @@ const NewApplication = () => {
     setConfirmView,
     setMissingView,
     setAddressPart,
+    practice,
   });
 
   // What the question card shows: during the voice interview the address is asked in 3 parts.
@@ -3116,7 +3169,11 @@ const NewApplication = () => {
       {isIssuing && <IssuingOverlay message={statusMessage} />}
       <ConsentNotice
         open={!consentGiven}
-        onAgree={() => setConsentGiven(true)}
+        onAgree={() => {
+          setConsentGiven(true);
+          practice.rec.reset();
+          practice.session.start('manual');   // practice log: answers "off" unless the backend turned it on
+        }}
         speak={speakText}
         stopSpeaking={stopSpeakText}
       />
