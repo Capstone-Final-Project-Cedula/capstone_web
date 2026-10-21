@@ -1650,7 +1650,7 @@ function useConversationEngine({
           // Letters instead of yes/no: they are spelling it (or adding to their spelling). A try too.
           if (countAttempt(fieldIndex) >= MAX_ATTEMPTS) { giveUpOnField(fieldIndex); return; }
           spelledRef.current = combineSpelling(spelledRef.current, reply);
-          finishSpelling(fieldIndex);
+          finishSpelling(fieldIndex, { heardBy: meta });
         } else if (isNoAnswer(reply) || /^(no|hindi|mali)\b/i.test(normalizeReply(reply))) {
           spelledRef.current = '';
           fixAnswer(fieldIndex);
@@ -1702,7 +1702,7 @@ function useConversationEngine({
         setStatusMessage('Listening for the letters...');
       },
       onError: () => {},
-      onEnd: (heard) => {
+      onEnd: (heard, meta) => {
         if (!conversationActiveRef.current || turn !== confirmTurnRef.current) return;
         const reply = heard.trim();
         if (!reply) {
@@ -1716,14 +1716,14 @@ function useConversationEngine({
         addChatMessage('user', reply);
         spelledRef.current = combineSpelling(spelledRef.current, reply);
         setDraftAnswer(spelledRef.current.toUpperCase());
-        finishSpelling(fieldIndex);
+        finishSpelling(fieldIndex, { heardBy: meta });
       },
     });
   }, [listenOnce, speak, giveUpOnField, setDraftAnswer, setPhase, setStatusMessage, addChatMessage]);
 
   // `typed`: the applicant (or staff) typed the correction on screen, so it is saved
-  // without another "is that correct?".
-  const finishSpelling = useCallback(async (fieldIndex, { typed = '' } = {}) => {
+  // without another "is that correct?". `heardBy`: the recorder's meta of spoken letters (timing line).
+  const finishSpelling = useCallback(async (fieldIndex, { typed = '', heardBy = null } = {}) => {
     const field = INTERVIEW_FIELDS[fieldIndex];
     const letters = (typed || spelledRef.current).trim();
     if (!letters) {
@@ -1745,6 +1745,7 @@ function useConversationEngine({
       return;
     }
     if (!conversationActiveRef.current || turn !== confirmTurnRef.current) return;
+    if (!typed) logAnswerTiming(field.key, heardBy);   // every branch below puts the answer on screen now
     practice.rec.heard(field.key, { text: letters, engine: typed ? 'typed' : 'spelled' });
     practice.rec.parsed(field.key, result);
     // "Sorry" / "What?" while spelling a place is not a place either (only names keep the unclear pass).
