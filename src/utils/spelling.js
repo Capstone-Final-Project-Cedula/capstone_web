@@ -38,6 +38,10 @@ const DELETE = new Set(['delete', 'erase', 'backspace', 'undo', 'remove', 'bura'
 const CLEAR = new Set(['clear', 'restart', 'ulitin']);
 const SPACE = new Set(['space', 'espasyo']);
 
+const COMMANDS = new Set([...DONE, ...DELETE, ...CLEAR, ...SPACE, 'double']);
+// A whole spoken word, not a letter or a command ("Ordiz", "spelling").
+const isWord = (tok) => Boolean(tok) && /^[a-zñ']{2,}$/.test(tok) && !LETTER_WORDS[tok] && !COMMANDS.has(tok);
+
 /**
  * Apply one spoken chunk to the text spelled so far.
  * Returns { text, done }.
@@ -80,7 +84,13 @@ export const applySpelling = (current, transcript) => {
       i += 1;
       continue;
     }
-    if (LETTER_WORDS[tok]) { text += LETTER_WORDS[tok]; continue; }
+    if (LETTER_WORDS[tok]) {
+      // A lone letter said before the whole word ("O, Ordiz, O R D I Z") is a lead-in, not the
+      // first letter of the spelling: dropped, so the name is not spelled "oordiz" (plan 001.8).
+      if (spelledReply && isWord(tokens[i + 1]) && !LETTER_WORDS[tokens[i - 1]]) continue;
+      text += LETTER_WORDS[tok];
+      continue;
+    }
     if (!spelledReply && /^[a-zñ']+$/.test(tok)) {
       // A whole word ("Cruz"): keep it, as a new word if letters came before it.
       if (text && !/[\s-]$/.test(text)) text += ' ';

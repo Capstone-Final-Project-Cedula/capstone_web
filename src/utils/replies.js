@@ -9,11 +9,12 @@ export const normalizeReply = (value) =>
 const YES_START = /^(yes|yeah|yep|yup|yah|ya|correct|right|that is correct|that's correct|that's right|it is correct|it's correct|spelling is correct|okay|ok|sure|confirm|confirmed|proceed|go ahead|opo|oo|ooh|oop|oof|oho|oh|o|tama|sige|ayos)\b/;
 const NEGATION = /\b(no|not|nope|hindi|mali|wrong|incorrect|but|pero|change|wait)\b/;
 
-// "Yes.", "Yes. Yes.", "Yes, that's correct po", "Oo, tama", "Oh." all count as yes; anything
+// "Yes.", "Yes. Yes.", "Yes, that's correct po", "Oo, tama", "Oh." all count as yes, also with
+// extra words after it, however many (the tiny yes/no model invents some; plan 001.8). Anything
 // that also says no / but / change does not, and neither do spelled letters ("O, R, D, I, Z").
 export const isYesAnswer = (value) => {
   const reply = normalizeReply(value);
-  return YES_START.test(reply) && !NEGATION.test(reply) && reply.split(' ').length <= 6 && !looksSpelled(value);
+  return YES_START.test(reply) && !NEGATION.test(reply) && !looksSpelled(value);
 };
 
 // Includes how Whisper writes "mali" and "hindi po" ("Malay", "Molly", "Hindipa", "In people").

@@ -64,8 +64,12 @@ export const createPracticeRecorder = ({ savedForm = (field, value) => value, no
       });
     },
 
-    /** What /answer made of the latest try. The first usable one is the "first voice-parsed value". */
-    parsed(key, result) {
+    /**
+     * What /answer made of the latest try. The first usable one is the "first voice-parsed value".
+     * `partial`: only part of the answer (a province of birth, its town is asked next), so it is not
+     * the first value; the place of birth's steps all count as tries of the one `place_of_birth` row.
+     */
+    parsed(key, result, { partial = false } = {}) {
       const e = entry(key);
       const last = e.attempts[e.attempts.length - 1];
       if (last) {
@@ -75,7 +79,7 @@ export const createPracticeRecorder = ({ savedForm = (field, value) => value, no
       }
       const engine = last?.engine;
       // A spoken "none" (an empty value) is a real first answer too: undefined means "not heard yet".
-      if (e.first === undefined && result?.ok && (engine === 'whisper' || engine === 'browser')) {
+      if (!partial && e.first === undefined && result?.ok && (engine === 'whisper' || engine === 'browser')) {
         e.first = savedForm(key, result.value ?? '') ?? null;
       }
     },

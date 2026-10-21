@@ -131,6 +131,27 @@ describe('practice recorder (plan 001.7)', () => {
     });
   });
 
+  test('the place of birth steps make one row: tries summed, timed from the first ask, first whole place (plan 001.8)', () => {
+    const c = clock();
+    const rec = createPracticeRecorder({ now: c.now });
+    rec.asked('place_of_birth');                                   // the shortcut question
+    rec.heard('place_of_birth', { text: 'No.', engine: 'whisper' });
+    rec.parsed('place_of_birth', { ok: false, value: '' }, { partial: true });
+    c.advance(4000);
+    rec.asked('place_of_birth');                                   // the province question: clock keeps running
+    rec.heard('place_of_birth', { text: 'Bokidnon', engine: 'whisper' });
+    rec.parsed('place_of_birth', { ok: true, value: 'Bukidnon' }, { partial: true });
+    c.advance(4000);
+    rec.asked('place_of_birth');                                   // the town question
+    rec.heard('place_of_birth', { text: 'Lantap', engine: 'whisper' });
+    rec.parsed('place_of_birth', { ok: true, value: 'Lantapan, Bukidnon' });
+    c.advance(2000);
+    const note = rec.accept('place_of_birth', 'Lantapan, Bukidnon');
+    expect(note).toMatchObject({
+      field: 'place_of_birth', attempts: 3, seconds: 10, first_value: 'Lantapan, Bukidnon', accepted_value: 'Lantapan, Bukidnon',
+    });
+  });
+
   test('long heard text is cut to what the backend accepts', () => {
     const rec = createPracticeRecorder();
     rec.asked('occupation');
