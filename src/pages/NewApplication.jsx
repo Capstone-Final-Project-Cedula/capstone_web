@@ -1627,6 +1627,8 @@ function useConversationEngine({
         // reply that is just "go back" / "change my address" moves (plan 001.6).
         if (isYesAnswer(reply)) {
           noteShortcut(result, false);
+          // A yes to "Were you born in <town>?" is the place-of-birth answer itself (a yes to "is that correct?" is not).
+          if (result.birthShortcut) logAnswerTiming('place_of_birth', meta);
           spelledRef.current = '';
           acceptAnswer(fieldIndex, result);
           return;
