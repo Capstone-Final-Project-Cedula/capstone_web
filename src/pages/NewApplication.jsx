@@ -30,11 +30,16 @@ import ConsentNotice from '../components/interview/ConsentNotice';
 import { combineSpelling, looksSpelled, titleCaseSpelled } from '../utils/spelling';
 import { isNoAnswer, isYesAnswer, normalizeReply } from '../utils/replies';
 import { ADDRESS_PARTS, addressTownOf, joinAddress } from '../utils/address';
+import { checkAnswer } from '../utils/answerCheck';
+import {
+  BIRTH_IDLE, BIRTH_PROVINCE_STEP, birthQuestion, onBirthNo, onBirthPick, onBirthResult, shortcutResult, startBirth,
+} from '../utils/birthPlace';
 import { COUNTER_LINE, COUNTER_SCREEN_LINE } from '../utils/counterFlow';
 import { validateFormData } from '../utils/requiredFields';
 import { createPracticeRecorder, createPracticeSession } from '../utils/practiceLog';
 import { Keyboard, Mic } from 'lucide-react';
 import Button from '../components/ui/Button';
+import Badge from '../components/ui/Badge';
 import Card from '../components/ui/Card';
 import Input from '../components/ui/Input';
 
@@ -198,6 +203,14 @@ const questionOf = (address, fieldIndex) => (isAddressPartOf(address, fieldIndex
   ? ADDRESS_PARTS[address.part]
   : INTERVIEW_FIELDS[fieldIndex]);
 const attemptKeyOf = (address, fieldIndex) => (isAddressPartOf(address, fieldIndex) ? ADDRESS_PARTS[address.part].key : fieldIndex);
+// The place of birth is asked in steps by voice (plan 001.8). `birth` = see utils/birthPlace.js.
+const isBirthStepOf = (birth, fieldIndex) => INTERVIEW_FIELDS[fieldIndex]?.key === 'place_of_birth' && birth.active;
+// The question being asked: an address part, a place-of-birth step, or the field itself.
+const askedOf = (address, birth, fieldIndex) => (isBirthStepOf(birth, fieldIndex)
+  ? birthQuestion(birth)
+  : questionOf(address, fieldIndex));
+// The practice log keeps one row per field: every place-of-birth step is noted as `place_of_birth`.
+const logKeyOf = (asked) => asked.logKey || asked.key;
 const RETRY_PHRASES = [
   "I didn't quite catch that. Could you say it again?",
   "Sorry, I missed that. One more time, please?",
@@ -442,16 +455,13 @@ const localInterpret = (key, text) => {
  * places) and regex (dates, numbers, choices) and rejects answers that do not
  * fit the question. Falls back to localInterpret if the backend is unreachable.
  */
-const interpretAnswer = async (key, text, { spoken = false, town = null } = {}) => {
-  try {
-    const { data } = await extractionAPI.understandAnswer(key, String(text || ''), spoken, town);
-    return data;
-  } catch (error) {
-    if (error.response?.status === 401) throw error;
-    console.warn('Answer check unavailable, using the local check:', error);
-    return localInterpret(key, text);
-  }
-};
+const interpretAnswer = (key, text, { spoken = false, town = null, province = null } = {}) => checkAnswer({
+  request: () => extractionAPI.understandAnswer(key, String(text || ''), spoken, town, province),
+  local: () => localInterpret(key, text),
+  key,
+  spoken,
+  onOffline: (error) => console.warn('Answer check unavailable, using the local check:', error),
+});
 
 const validateFieldValue = (key, value) => {
   if (key === 'sex') return validateSex(value) || value;
@@ -988,7 +998,7 @@ function useWhisperListener() {
     streamRef.current = null;
   }, []);
 
-  const listenOnce = useCallback(async ({ fieldKey, town, onStart, onTranscribing, onEnd, onError, vad }) => {
+  const listenOnce = useCallback(async ({ fieldKey, town, province, onStart, onTranscribing, onEnd, onError, vad }) => {
     const cfg = { ...VAD, ...(vad || {}) };   // e.g. spelling allows longer pauses between letters
     let stream;
     let ctx;
@@ -1071,7 +1081,7 @@ function useWhisperListener() {
         const wav = await convertRecordingToWav(new Blob(chunks, { type: mimeType || 'audio/webm' }));
         const file = new File([wav], 'answer.wav', { type: 'audio/wav' });
         const t0 = performance.now();
-        const { data } = await speechAPI.transcribe(file, fieldKey, { timeout: 20000, town });
+        const { data } = await speechAPI.transcribe(file, fieldKey, { timeout: 20000, town, province });
         onEnd?.((data.transcript || '').trim(), {
           engine: 'whisper',
           seconds: Math.round((performance.now() - t0) / 100) / 10,
@@ -1195,6 +1205,7 @@ function useConversationEngine({
     missingTurnRef.current += 1;
     setMissingView(null);
     addressRef.current = { active: false, part: 0, results: {} };   // a resumed address starts at the town
+    birthRef.current = BIRTH_IDLE;                                    // a resumed place of birth starts over
     setAddressPart(null);
   }, [cancelSpeech, stopBrowserListening, whisper, setStatusMessage, setPhase, setConfirmView, setMissingView, setAddressPart]);
 
@@ -1210,6 +1221,7 @@ function useConversationEngine({
     missingTurnRef.current += 1;
     setMissingView(null);
     addressRef.current = { active: false, part: 0, results: {} };
+    birthRef.current = BIRTH_IDLE;
     setAddressPart(null);
   }, [stopBrowserListening, whisper, setConfirmView, setMissingView, setAddressPart]);
 
@@ -1259,10 +1271,16 @@ function useConversationEngine({
   // `active` while those questions run; each confirmed answer is kept in `results` and they are joined
   // into the one address answer after the last one.
   const addressRef = useRef({ active: false, part: 0, results: {} });
+  // The place of birth in steps (plan 001.8): the "Were you born in <town>?" shortcut, the province,
+  // then a town of it. `homeTownRef`: the town of the address answers ("Baungon, Bukidnon").
+  const birthRef = useRef(BIRTH_IDLE);
+  const homeTownRef = useRef('');
 
-  // How many times each question was answered with something unusable.
+  // How many times each question was answered with something unusable, said "no" to, or answered
+  // again at the "is that correct?" step (plan 001.8: every try counts). At the limit the answer is
+  // typed instead of asked again; the place of birth shows its closest places to tap.
   const attemptsRef = useRef({});
-  const MAX_ATTEMPTS = 3;
+  const MAX_ATTEMPTS = 2;
   const countAttempt = (fieldIndex) => {
     const key = attemptKeyOf(addressRef.current, fieldIndex);
     attemptsRef.current[key] = (attemptsRef.current[key] || 0) + 1;
@@ -1290,14 +1308,23 @@ function useConversationEngine({
       addressRef.current = { active: true, part: 0, results: {} };
       ADDRESS_PARTS.forEach((p) => { attemptsRef.current[p.key] = 0; });
     }
-    const asked = questionOf(addressRef.current, fieldIndex);
-    practice.rec.asked(asked.key);   // practice log: the clock starts at the first ask only
+    if (field.key === 'place_of_birth' && !birthRef.current.active) {
+      birthRef.current = startBirth(homeTownRef.current);   // the shortcut first when the address gave a town
+    }
+    const asked = askedOf(addressRef.current, birthRef.current, fieldIndex);
+    practice.rec.asked(logKeyOf(asked));   // practice log: the clock starts at the first ask only
     clearConfirmView();
     currentFieldIndexRef.current = fieldIndex;
     setCurrentFieldIndex(fieldIndex);
-    setAddressPart(field.key === 'address' ? asked : null);
-    setDraftAnswer(field.key === 'address' ? '' : answersRef.current[field.key] || '');
+    const inSteps = field.key === 'address' || isBirthStepOf(birthRef.current, fieldIndex);
+    setAddressPart(inSteps ? asked : null);
+    setDraftAnswer(inSteps ? '' : answersRef.current[field.key] || '');
     setAwaitingConfirmation(false);
+    if (isBirthStepOf(birthRef.current, fieldIndex) && birthRef.current.step === 'shortcut') {
+      // "Were you born in Baungon, Bukidnon?": a yes is the answer, a no asks the province.
+      latestRef.current.confirmAnswer(fieldIndex, shortcutResult(birthRef.current.home));
+      return;
+    }
     setPhase(PHASE.ASKING);
     setStatusMessage(`Asking about your ${asked.label.toLowerCase()}`);
     addChatMessage('assistant', asked.question);
@@ -1307,10 +1334,11 @@ function useConversationEngine({
   // Whisper -> (handleSpokenAnswer) DistilBERT + Regex -> voice read-back.
   const listenForAnswer = useCallback((fieldIndex) => {
     if (!conversationActiveRef.current) return;
-    const asked = questionOf(addressRef.current, fieldIndex);
+    const asked = askedOf(addressRef.current, birthRef.current, fieldIndex);
     listenOnce({
       fieldKey: asked.key,   // Whisper gets a hint for this question (e.g. the barangays of the town said)
       town: asked.key === 'address_barangay' ? addressTownOf(addressRef.current) : null,
+      province: asked.key === 'place_of_birth_town' ? birthRef.current.province?.code : null,   // its towns in the hint
       onStart: () => {
         setVoiceError('');
         setPhase(PHASE.LISTENING);
@@ -1326,7 +1354,7 @@ function useConversationEngine({
           return;
         }
         if (meta.error) {
-          practice.rec.heard(asked.key, { text: '', engine: meta.engine, reason: meta.error });
+          practice.rec.heard(logKeyOf(asked), { text: '', engine: meta.engine, reason: meta.error });
           if (countAttempt(fieldIndex) >= MAX_ATTEMPTS) {
             giveUpOnField(fieldIndex);
             return;
@@ -1361,11 +1389,15 @@ function useConversationEngine({
         return;
       }
       const joined = joinAddress(address.results);
+      homeTownRef.current = address.results.address_town?.value || '';   // for "Were you born in ...?"
       addressRef.current = { active: false, part: 0, results: {} };
       setAddressPart(null);
       result = { ...result, value: joined, display: joined };
     }
-    practice.session.note(field.key === 'address' ? practice.rec.joined(result.value) : practice.rec.accept(field.key, result.value));
+    practice.session.note(field.key === 'address'
+      ? practice.rec.joined(result.value)
+      : practice.rec.accept(field.key, result.value, result.picked ? 'typed' : undefined));   // a tapped place: on screen
+    if (field.key === 'place_of_birth') birthRef.current = BIRTH_IDLE;
     attemptsRef.current[fieldIndex] = 0;
     missingRetryRef.current.delete(fieldIndex);
     clearConfirmView();
@@ -1375,17 +1407,18 @@ function useConversationEngine({
     moveToNextQuestion();
   }, [saveSpokenAnswer, moveToNextQuestion, askQuestion, clearConfirmView, setStatusMessage, setAddressPart, addChatMessage, practice]);
 
-  // Too many unusable answers: leave the field blank instead of looping forever. Before the
+  // Leave the field blank for now ("Skip for now", or the address after too many tries). Before the
   // final "yes" the applicant is asked for it again (type it or say it again). If speaking
   // fails again on that second round, the text box opens on its own.
-  const giveUpOnField = useCallback((fieldIndex) => {
+  const skipField = useCallback((fieldIndex) => {
     const field = INTERVIEW_FIELDS[fieldIndex];
-    practice.session.note(practice.rec.skip(questionOf(addressRef.current, fieldIndex).key));   // before the address resets
+    practice.session.note(practice.rec.skip(logKeyOf(askedOf(addressRef.current, birthRef.current, fieldIndex))));   // before the address resets
     attemptsRef.current[fieldIndex] = 0;
     if (field.key === 'address') {
       addressRef.current = { active: false, part: 0, results: {} };   // asked again from the town question
       setAddressPart(null);
     }
+    if (field.key === 'place_of_birth') birthRef.current = BIRTH_IDLE;
     clearConfirmView();
     if (missingRetryRef.current.has(fieldIndex)) {
       missingRetryRef.current.delete(fieldIndex);
@@ -1397,6 +1430,63 @@ function useConversationEngine({
     addChatMessage('assistant', msg);
     speak(msg, moveToNextQuestion);
   }, [speak, moveToNextQuestion, clearConfirmView, setAddressPart, addChatMessage, practice]);
+
+  // Too many tries (plan 001.8): the answer is typed instead of asked again, so no question loops.
+  // The place of birth shows its closest places to tap. The address (asked in 3 parts) and a question
+  // asked again from the missing-answers step keep their way out (skip, then the text box).
+  const giveUpOnField = useCallback((fieldIndex) => {
+    const field = INTERVIEW_FIELDS[fieldIndex];
+    if (field.key === 'place_of_birth') {
+      latestRef.current.showBirthChoices(fieldIndex);
+      return;
+    }
+    if (field.key === 'address' || missingRetryRef.current.has(fieldIndex)) {
+      skipField(fieldIndex);
+      return;
+    }
+    attemptsRef.current[fieldIndex] = 0;
+    confirmTurnRef.current += 1;
+    pendingConfirmRef.current = { fieldIndex, result: null };
+    setConfirmView({ mode: 'typing', label: field.label, value: '', letters: '', canSpell: true, hint: field.hint });
+    setPhase(PHASE.CONFIRMING);
+    setStatusMessage(`Type your ${spokenLabel(field)} in the box, or skip it for now.`);
+    const msg = `Let's type your ${spokenLabel(field)} instead. Please type it in the box on the screen.`;
+    addChatMessage('assistant', msg);
+    speak(msg);   // no listening: the applicant is typing
+  }, [speak, skipField, setConfirmView, setPhase, setStatusMessage, addChatMessage]);
+
+  // The place of birth after 2 misses (plan 001.8): its closest list entries to tap, or type it.
+  // `typed`: a typed place that is not in the list, offered "as typed" next to the list entries.
+  const showBirthChoices = useCallback(async (fieldIndex, suggestions = [], { typed = '', message = '' } = {}) => {
+    confirmTurnRef.current += 1;
+    const turn = confirmTurnRef.current;
+    pendingConfirmRef.current = { fieldIndex, result: null };
+    const birth = birthRef.current;
+    let choices = suggestions.length ? suggestions : birth.suggestions || [];
+    if (!choices.length && !message) {
+      // Nothing usable heard: the likeliest places (the home province and its region, or the province's towns).
+      const inProvince = birth.step === 'town' && birth.province;
+      let fallback = null;
+      try {
+        fallback = await interpretAnswer(inProvince ? 'place_of_birth_town' : 'place_of_birth_province', '', {
+          spoken: true, province: inProvince ? birth.province.code : null,
+        });
+      } catch {
+        return;   // session expired: the API client sends the user to the login page
+      }
+      if (!conversationActiveRef.current || turn !== confirmTurnRef.current) return;
+      choices = fallback?.suggestions || [];
+    }
+    choices = choices.slice(0, 3);
+    setConfirmView({ mode: 'choose', label: 'Place of birth', value: '', letters: '', canSpell: true, choices, typed });
+    let prompt = message || 'Please type your place of birth on the screen.';
+    if (!message && typed) prompt = `${typed} is not in the list of places. Please tap the right place, or use it as typed.`;
+    else if (!message && choices.length) prompt = 'Please tap your place of birth on the screen, or type it.';
+    setPhase(PHASE.CONFIRMING);
+    setStatusMessage('Tap your place of birth, or type it.');
+    addChatMessage('assistant', prompt);
+    speak(prompt);   // no listening: the applicant taps or types
+  }, [speak, setConfirmView, setPhase, setStatusMessage, addChatMessage]);
 
   // "Go back", "go back to my address", "change my surname": ask that question again,
   // then continue where the interview was. Returns true when the reply was such a request.
@@ -1410,6 +1500,7 @@ function useConversationEngine({
       return true;
     }
     addressRef.current = { active: false, part: 0, results: {} };   // an address asked again starts at the town
+    birthRef.current = BIRTH_IDLE;                                    // so does a place of birth
     let target = nav.type === 'goto' ? nav.index : fromIndex - 1;
     if (nav.type === 'back' && INTERVIEW_FIELDS[target]?.key === 'icr_no' && isFilipino(answersRef.current)) target -= 1;
     if (target < 0) {
@@ -1438,13 +1529,16 @@ function useConversationEngine({
     const shown = result.display || result.value;
     confirmTurnRef.current += 1;
     pendingConfirmRef.current = { fieldIndex, result };
+    // The place of birth in steps is read back as "Town, Province" in large text; a "no" asks the step again.
+    const birthSteps = isBirthStepOf(birthRef.current, fieldIndex);
     setConfirmView({
       mode: 'confirm',
-      label: questionOf(addressRef.current, fieldIndex).label,
+      label: askedOf(addressRef.current, birthRef.current, fieldIndex).label,
       value: shown,
-      // Letter tiles only where spelling matters (names, places), not for dates or numbers.
-      letters: SPELLABLE_KEYS.has(field.key) ? String(result.value || '') : '',
-      canSpell: SPELLABLE_KEYS.has(field.key),
+      // Letter tiles only where spelling matters (names), not for dates, numbers or a place from the list.
+      letters: SPELLABLE_KEYS.has(field.key) && !birthSteps ? String(result.value || '') : '',
+      canSpell: SPELLABLE_KEYS.has(field.key) && !birthSteps,
+      note: result.warnings?.[0] || '',
     });
     const prompt = result.needs_confirmation && result.message
       ? result.message   // e.g. "I heard Nails. Is that the place where you were born?"
@@ -1459,7 +1553,15 @@ function useConversationEngine({
   // The answer was wrong: spell it (names, places) or ask again (dates, numbers, choices).
   const fixAnswer = useCallback((fieldIndex) => {
     const field = INTERVIEW_FIELDS[fieldIndex];
-    if (countAttempt(fieldIndex) >= MAX_ATTEMPTS + 1) {
+    if (isBirthStepOf(birthRef.current, fieldIndex)) {
+      // "No" to the shortcut asks the province; to a place, the same step again, then the places to tap.
+      const { birth, action } = onBirthNo(birthRef.current);
+      birthRef.current = birth;
+      if (action === 'choose') showBirthChoices(fieldIndex);
+      else askQuestion(fieldIndex);
+      return;
+    }
+    if (countAttempt(fieldIndex) >= MAX_ATTEMPTS) {
       giveUpOnField(fieldIndex);
       return;
     }
@@ -1468,10 +1570,10 @@ function useConversationEngine({
       return;
     }
     clearConfirmView();
-    const msg = `Okay. Please say your ${questionOf(addressRef.current, fieldIndex).label.toLowerCase().replace(/\s*\(.*\)/, '')} again.`;
+    const msg = `Okay. Please say your ${askedOf(addressRef.current, birthRef.current, fieldIndex).label.toLowerCase().replace(/\s*\(.*\)/, '')} again.`;
     addChatMessage('assistant', msg);
     speak(msg, () => listenForAnswer(fieldIndex));
-  }, [speak, giveUpOnField, clearConfirmView, addChatMessage]);
+  }, [speak, giveUpOnField, showBirthChoices, askQuestion, clearConfirmView, addChatMessage]);
 
   const listenForConfirmation = useCallback((fieldIndex, result, silentTries = 0) => {
     const turn = confirmTurnRef.current;
@@ -1483,10 +1585,21 @@ function useConversationEngine({
         setStatusMessage('Listening for yes or no...');
       },
       onError: () => {},
-      onEnd: (heard) => {
+      onEnd: (heard, meta = {}) => {
         if (!conversationActiveRef.current || turn !== confirmTurnRef.current) return;
         const reply = heard.trim();
+        // The shortcut ("Were you born in Baungon, Bukidnon?") is the place-of-birth answer itself: a try.
+        const noteShortcut = (parsed, partial) => {
+          if (!result.birthShortcut) return;
+          practice.rec.heard('place_of_birth', { text: reply, engine: meta.engine || engineRef.current, seconds: meta.seconds });
+          practice.rec.parsed('place_of_birth', parsed, { partial });
+        };
         if (!reply) {
+          if (result.birthShortcut) {
+            noteShortcut({ ok: false, value: '' }, true);
+            fixAnswer(fieldIndex);   // no reply to the shortcut: ask the province
+            return;
+          }
           if (silentTries >= 1) {
             // Still no reply: keep the answer; it stays on screen and is checked again at the review.
             spelledRef.current = '';
@@ -1500,12 +1613,24 @@ function useConversationEngine({
         // A clear yes wins over navigation words heard in the same reply ("Yes. Go back."); only a
         // reply that is just "go back" / "change my address" moves (plan 001.6).
         if (isYesAnswer(reply)) {
+          noteShortcut(result, false);
           spelledRef.current = '';
           acceptAnswer(fieldIndex, result);
           return;
         }
         if (handleNavigation(reply, fieldIndex)) return;
-        const spellable = SPELLABLE_KEYS.has(INTERVIEW_FIELDS[fieldIndex].key);
+        if (result.birthShortcut) {
+          if (isNoAnswer(reply) || /^(no|hindi|mali)\b/i.test(normalizeReply(reply))) {
+            noteShortcut({ ok: false, value: '' }, true);
+            fixAnswer(fieldIndex);
+          } else {
+            // Not yes or no: taken as the answer to the province question ("Malaybalay, Bukidnon").
+            birthRef.current = { ...birthRef.current, step: 'province' };
+            handleSpokenAnswer(fieldIndex, reply, { shown: true, engine: meta.engine, seconds: meta.seconds });
+          }
+          return;
+        }
+        const spellable = SPELLABLE_KEYS.has(INTERVIEW_FIELDS[fieldIndex].key) && !isBirthStepOf(birthRef.current, fieldIndex);
         if (spellable && looksSpelled(reply)) {
           // Letters instead of yes/no: they are spelling it (or adding to their spelling).
           spelledRef.current = combineSpelling(spelledRef.current, reply);
@@ -1514,12 +1639,21 @@ function useConversationEngine({
           spelledRef.current = '';
           fixAnswer(fieldIndex);
         } else {
+          // They simply said the right answer. A try like any other (plan 001.8): at the limit it is typed.
           spelledRef.current = '';
-          handleSpokenAnswer(fieldIndex, reply, { shown: true });  // they simply said the right answer
+          if (isBirthStepOf(birthRef.current, fieldIndex)) {
+            const { birth, action } = onBirthNo(birthRef.current);
+            birthRef.current = birth;
+            if (action === 'choose') { showBirthChoices(fieldIndex); return; }
+          } else if (countAttempt(fieldIndex) >= MAX_ATTEMPTS) {
+            giveUpOnField(fieldIndex);
+            return;
+          }
+          handleSpokenAnswer(fieldIndex, reply, { shown: true, engine: meta.engine, seconds: meta.seconds });
         }
       },
     });
-  }, [listenOnce, speak, acceptAnswer, fixAnswer, setPhase, setStatusMessage, addChatMessage]);
+  }, [listenOnce, speak, acceptAnswer, fixAnswer, giveUpOnField, showBirthChoices, setPhase, setStatusMessage, addChatMessage, practice]);
 
   // ── Letter-by-letter spelling (the fallback) ──
   // One turn: the applicant spells, and as soon as they pause the assistant reads the
@@ -1594,19 +1728,44 @@ function useConversationEngine({
     practice.rec.heard(field.key, { text: letters, engine: typed ? 'typed' : 'spelled' });
     practice.rec.parsed(field.key, result);
     if (!result.ok && result.reason !== 'unclear') {
+      if (typed) {
+        // Typed in the box: say why and keep the box open (a date or number is not spelled).
+        setConfirmView((view) => (view ? { ...view, error: result.message } : view));
+        speak(result.message);
+        return;
+      }
+      if (countAttempt(fieldIndex) >= MAX_ATTEMPTS) { giveUpOnField(fieldIndex); return; }   // every try counts
       const msg = `${result.message} Let's spell it again.`;
       addChatMessage('assistant', msg);
       speak(msg, () => startSpelling(fieldIndex));
       return;
     }
-    const kept = { ...result, ok: true, value: spelledValue, display: spelledValue, needs_confirmation: false };
+    // Names keep exactly what was spelled or typed. A date, number or choice takes its checked form
+    // ("may 10 1990" -> "May 10, 1990"); a place of birth found in the list is written the list's way.
+    let value = spelledValue;
+    let display = value;
+    const checked = !result.methods?.includes('local');   // the backend's list, not the offline check
+    if (!SPELLABLE_KEYS.has(field.key)) {
+      value = result.value ?? spelledValue;
+      display = result.display || value;
+    } else if (field.key === 'place_of_birth' && result.ok && checked && !result.warnings?.length) {
+      value = result.value || spelledValue;
+      display = value;
+    } else if (field.key === 'place_of_birth' && typed && result.suggestions?.length) {
+      // Typed, not in the list: the closest list entries to tap, or keep it as typed (clearly marked).
+      showBirthChoices(fieldIndex, result.suggestions, { typed: spelledValue });
+      return;
+    } else if (field.key === 'place_of_birth' && typed) {
+      display = `${value} (typed${checked ? ', not in the list' : ', not checked'})`;
+    }
+    const kept = { ...result, ok: true, value, display, needs_confirmation: false };
     if (typed) {
       addChatMessage('user', spelledValue);
       acceptAnswer(fieldIndex, kept);
       return;
     }
     confirmAnswer(fieldIndex, kept);
-  }, [speak, confirmAnswer, acceptAnswer, addChatMessage, practice]);
+  }, [speak, confirmAnswer, acceptAnswer, giveUpOnField, showBirthChoices, setConfirmView, addChatMessage, practice]);
 
   // The Yes / No buttons and the type-it box on the confirmation panel. A tap ends the
   // voice turn in progress (speech and listening), then continues like a spoken reply.
@@ -1626,15 +1785,70 @@ function useConversationEngine({
     } else if (choice === 'typed' && typedValue.trim()) {
       spelledRef.current = '';
       finishSpelling(fieldIndex, { typed: typedValue.trim() });
+    } else if (choice === 'pick') {
+      // A place of birth tapped on the choices screen (always a list entry).
+      const pick = onBirthPick(birthRef.current, typedValue);
+      birthRef.current = pick.birth;
+      if (pick.action === 'town') askQuestion(fieldIndex);
+      else if (pick.action === 'accept') {
+        practice.rec.heard('place_of_birth', { text: pick.result.value, engine: 'typed' });
+        practice.rec.parsed('place_of_birth', pick.result);
+        acceptAnswer(fieldIndex, pick.result);
+      }
+    } else if (choice === 'keep' && typedValue.trim()) {
+      // A typed place that is not in the list, kept as typed on purpose.
+      const value = typedValue.trim();
+      addChatMessage('user', value);
+      acceptAnswer(fieldIndex, {
+        ok: true, value, display: `${value} (typed, not in the list)`, warnings: ['Typed place of birth, not in the list.'],
+      });
+    } else if (choice === 'spell') {
+      spelledRef.current = '';
+      startSpelling(fieldIndex);
+    } else if (choice === 'skip') {
+      spelledRef.current = '';
+      skipField(fieldIndex);
     }
-  }, [cancelSpeech, stopBrowserListening, acceptAnswer, fixAnswer, finishSpelling]);
+  }, [cancelSpeech, stopBrowserListening, acceptAnswer, fixAnswer, finishSpelling, askQuestion, startSpelling, skipField, addChatMessage, practice]);
+
+  // One place-of-birth step answered (plan 001.8): a province asks its town, a whole place is read back,
+  // a miss is asked again once with an example, the second miss shows the closest places to tap.
+  const handleBirthResult = useCallback((fieldIndex, result) => {
+    if (result.reason === 'offline') {
+      // The answer check is down: a spoken place is never taken by the local check; it is typed.
+      practice.rec.parsed('place_of_birth', result, { partial: true });
+      showBirthChoices(fieldIndex, [], { message: result.message });
+      return;
+    }
+    if (result.reason === 'unclear') {   // "What?" / "Pakiulit": the question again, not a miss
+      practice.rec.parsed('place_of_birth', result, { partial: true });
+      speak(result.message, () => askQuestion(fieldIndex));
+      return;
+    }
+    const { birth, action } = onBirthResult(birthRef.current, result);
+    birthRef.current = { ...birth, suggestions: result.suggestions?.length ? result.suggestions : birth.suggestions };
+    practice.rec.parsed('place_of_birth', result, { partial: action !== 'confirm' });
+    if (action === 'town') {
+      addChatMessage('assistant', `Province: ${result.value}`);
+      askQuestion(fieldIndex);
+    } else if (action === 'confirm') {
+      confirmAnswer(fieldIndex, result);
+    } else if (action === 'choose') {
+      showBirthChoices(fieldIndex, result.suggestions || []);
+    } else {
+      setPhase(PHASE.RETRY);
+      setStatusMessage(result.message);
+      addChatMessage('assistant', result.message);
+      speak(result.message, () => listenForAnswer(fieldIndex));
+    }
+  }, [speak, askQuestion, confirmAnswer, showBirthChoices, listenForAnswer, setPhase, setStatusMessage, addChatMessage, practice]);
 
   const handleSpokenAnswer = useCallback(async (fieldIndex, transcript, heardBy = {}) => {
     const field = INTERVIEW_FIELDS[fieldIndex];
-    const asked = questionOf(addressRef.current, fieldIndex);   // the field, or the address part being asked
+    const asked = askedOf(addressRef.current, birthRef.current, fieldIndex);   // the field, or the address part being asked
     const spokenValue = transcript.trim();
     // Practice log: one try = what was heard, by which engine, and the Whisper seconds.
-    const recordHeard = () => practice.rec.heard(asked.key, {
+    const recordHeard = () => practice.rec.heard(logKeyOf(asked), {
       text: spokenValue,
       engine: heardBy.engine || engineRef.current,
       seconds: heardBy.seconds,
@@ -1664,11 +1878,16 @@ function useConversationEngine({
       result = await interpretAnswer(asked.key, spokenValue, {
         spoken: true,
         town: asked.key === 'address_barangay' ? addressTownOf(addressRef.current) : null,
+        province: asked.key === 'place_of_birth_town' ? birthRef.current.province?.code : null,
       });
     } catch {
       return; // session expired: the API client sends the user to the login page
     }
     if (!conversationActiveRef.current) return;
+    if (isBirthStepOf(birthRef.current, fieldIndex)) {
+      handleBirthResult(fieldIndex, result);
+      return;
+    }
     practice.rec.parsed(asked.key, result);
 
     if (!result.ok && result.reason === 'not_a_name' && SPELLABLE_KEYS.has(field.key)) {
@@ -1697,7 +1916,7 @@ function useConversationEngine({
       return;
     }
     confirmAnswer(fieldIndex, result);
-  }, [speak, askQuestion, acceptAnswer, confirmAnswer, giveUpOnField, setStatusMessage, setPhase, addChatMessage, practice]);
+  }, [speak, askQuestion, acceptAnswer, confirmAnswer, giveUpOnField, handleBirthResult, setStatusMessage, setPhase, addChatMessage, practice]);
 
   // Get the microphone and switch the conversation on. Returns false when voice cannot run.
   const activateVoice = useCallback(async () => {
@@ -1738,7 +1957,7 @@ function useConversationEngine({
     const spellPrompts = INTERVIEW_FIELDS.filter((f) => SPELLABLE_KEYS.has(f.key))
       .map((f) => `Please spell your ${f.label.toLowerCase().replace(/\s*\(.*\)/, '')}.`);
     window.setTimeout(() => prefetchSpeech(...INTERVIEW_FIELDS.map((f) => f.question), ...ADDRESS_PARTS.map((p) => p.question),
-      REVIEW_PROMPT), 300);
+      BIRTH_PROVINCE_STEP.question, REVIEW_PROMPT), 300);
     window.setTimeout(() => prefetchSpeech(...knownReadBacks, ...spellPrompts, 'Please say yes or no.'), 2500);
 
     if (!alreadyAnswered && startIndex === 0) {
@@ -2042,7 +2261,7 @@ function useConversationEngine({
     });
   }, [listenOnce, speak, issueNow, setAnswers, setStatusMessage, setPhase, addChatMessage]);
 
-  latestRef.current = { startVoiceReview, openMissingTyping, listenForMissingChoice };
+  latestRef.current = { startVoiceReview, openMissingTyping, listenForMissingChoice, confirmAnswer, showBirthChoices };
 
   return {
     isConversationActive,
@@ -2151,27 +2370,44 @@ const MissingFieldPanel = ({ view, onType, onSay, onTyped }) => {
  * The answer being checked, shown big with its letters, so the applicant can see a
  * misheard name ("Bakus") at a glance instead of listening to it being spelled.
  * Yes / No work like saying them; while spelling, the letters can also be typed.
+ * mode 'typing': too many tries, so the answer is typed (or skipped for now). mode 'choose': the
+ * place of birth after 2 misses — its closest list entries to tap, or type it (plan 001.8).
  */
-const ConfirmPanel = ({ view, onYes, onNo, onTyped }) => {
+const ConfirmPanel = ({ view, onYes, onNo, onTyped, onPick, onKeep, onSpell, onSkip }) => {
   const [typed, setTyped] = useState('');
   const [showTyping, setShowTyping] = useState(false);
-  useEffect(() => { setTyped(''); setShowTyping(view.mode === 'spelling'); }, [view.mode, view.value]);
+  const mode = view.mode;
+  const spelling = mode === 'spelling';
+  const typing = mode === 'typing';
+  const choosing = mode === 'choose';
+  useEffect(() => { setTyped(''); setShowTyping(spelling || typing || choosing); }, [mode, view.value, spelling, typing, choosing]);
 
   const letters = String(view.letters || '').toUpperCase().split('');
-  const spelling = view.mode === 'spelling';
+  const label = view.label.toLowerCase().replace(/\s*\(.*\)/, '');
   const submitTyped = (e) => {
     e.preventDefault();
     if (typed.trim()) onTyped(typed);
   };
+  let title = `Is your ${label} correct?`;
+  if (spelling) title = `Spell your ${label}`;
+  else if (typing) title = `Please type your ${label}`;
+  else if (choosing) title = view.choices?.length ? 'Tap your place of birth, or type it' : 'Please type your place of birth';
 
   return (
-    <div className="border-b border-gray-100 bg-indigo-50/60 p-5" role="region" aria-live="polite" aria-label="Check your answer">
-      <div className="text-sm font-semibold text-indigo-700">
-        {spelling ? `Spell your ${view.label.toLowerCase()}` : `Is your ${view.label.toLowerCase()} correct?`}
-      </div>
+    <div
+      className="border-b border-[var(--color-neutral-100)] bg-[var(--color-primary-light)] p-5"
+      role="region"
+      aria-live="polite"
+      aria-label="Check your answer"
+    >
+      <div className="text-sm font-semibold text-[var(--color-primary)]">{title}</div>
 
-      {!spelling && (
-        <div className="mt-1 break-words text-3xl font-bold text-gray-900">{view.value}</div>
+      {mode === 'confirm' && (
+        <div className="mt-1 break-words text-3xl font-bold text-[var(--color-neutral-900)]">{view.value}</div>
+      )}
+
+      {view.note && (
+        <div className="mt-2"><Badge tone="warning">{view.note}</Badge></div>
       )}
 
       {letters.length > 0 && (
@@ -2181,7 +2417,7 @@ const ConfirmPanel = ({ view, onYes, onNo, onTyped }) => {
             : (
               <span
                 key={i}
-                className="flex h-10 min-w-[2.25rem] items-center justify-center rounded-lg border border-indigo-200 bg-white px-2 text-xl font-bold text-gray-900 shadow-sm"
+                className="flex h-10 min-w-[2.25rem] items-center justify-center rounded-[var(--radius-sm)] border border-[var(--color-neutral-200)] bg-white px-2 text-xl font-bold text-[var(--color-neutral-900)] shadow-[var(--shadow-xs)]"
               >
                 {ch}
               </span>
@@ -2190,13 +2426,39 @@ const ConfirmPanel = ({ view, onYes, onNo, onTyped }) => {
       )}
 
       {spelling && (
-        <p className="mt-2 text-sm text-gray-600">
+        <p className="mt-2 text-sm text-[var(--color-neutral-600)]">
           Say the letters one by one, for example <strong>S, A, N, T, O, S</strong>. For two or more names, say
           {' '}<strong>"space"</strong> between them: <strong>M, A, R, Y, space, A, N, N</strong>.
         </p>
       )}
 
-      {!spelling && (
+      {typing && view.hint && <p className="mt-1 text-sm text-[var(--color-neutral-600)]">{view.hint}</p>}
+
+      {choosing && view.choices?.length > 0 && (
+        <div className="mt-3 grid gap-2 sm:grid-cols-3">
+          {view.choices.map((choice) => (
+            <Button
+              key={`${choice.value}-${choice.province}`}
+              variant="secondary"
+              size="lg"
+              onClick={() => onPick(choice)}
+              className="h-auto min-h-[2.75rem] min-w-0 whitespace-normal break-words py-2 text-left text-base"
+            >
+              {choice.value}{choice.province ? ' (province)' : ''}
+            </Button>
+          ))}
+        </div>
+      )}
+
+      {choosing && view.typed && (
+        <div className="mt-3">
+          <Button variant="ghost" size="lg" onClick={() => onKeep(view.typed)} className="h-auto min-h-[2.75rem] whitespace-normal break-words text-left">
+            Use "{view.typed}" as typed (not in the list)
+          </Button>
+        </div>
+      )}
+
+      {mode === 'confirm' && (
         <div className="mt-4 grid grid-cols-2 gap-2 sm:flex sm:flex-wrap">
           <button onClick={onYes} className="btn-success inline-flex items-center justify-center gap-2">
             <FaCheck /> Yes, correct
@@ -2207,7 +2469,7 @@ const ConfirmPanel = ({ view, onYes, onNo, onTyped }) => {
           {view.canSpell && !showTyping && (
             <button
               onClick={() => setShowTyping(true)}
-              className="col-span-2 text-sm font-medium text-indigo-700 underline-offset-2 hover:underline sm:col-span-1"
+              className="col-span-2 text-sm font-medium text-[var(--color-primary)] underline-offset-2 hover:underline sm:col-span-1"
             >
               Type it instead
             </button>
@@ -2216,18 +2478,25 @@ const ConfirmPanel = ({ view, onYes, onNo, onTyped }) => {
       )}
 
       {view.canSpell && showTyping && (
-        <form onSubmit={submitTyped} className="mt-3 flex flex-col gap-2 sm:flex-row">
-          <input
-            value={typed}
-            onChange={(e) => setTyped(e.target.value)}
-            placeholder={`Type the ${view.label.toLowerCase()}`}
-            className="input-field flex-1 text-base"
-            aria-label={`Type the ${view.label}`}
-          />
-          <button type="submit" disabled={!typed.trim()} className="btn-primary inline-flex items-center justify-center gap-2 disabled:opacity-50">
-            <FaCheck /> Use this
-          </button>
+        <form onSubmit={submitTyped} className="mt-3 flex flex-col gap-2 sm:flex-row sm:items-start">
+          <div className="min-w-0 flex-1">
+            <Input
+              value={typed}
+              onChange={(e) => setTyped(e.target.value)}
+              placeholder={choosing ? 'Type the town or city, and province' : `Type the ${label}`}
+              aria-label={`Type the ${view.label}`}
+              error={view.error || ''}
+            />
+          </div>
+          <Button type="submit" size="lg" disabled={!typed.trim()} icon={FaCheck}>Use this</Button>
         </form>
+      )}
+
+      {(typing || choosing) && (
+        <div className="mt-3 flex flex-wrap gap-2">
+          {choosing && <Button variant="ghost" size="sm" onClick={onSpell}>Spell it instead</Button>}
+          <Button variant="ghost" size="sm" onClick={onSkip}>Skip for now</Button>
+        </div>
       )}
     </div>
   );
@@ -2917,8 +3186,9 @@ const NewApplication = () => {
     practice,
   });
 
-  // What the question card shows: during the voice interview the address is asked in 3 parts.
-  const askedField = isConversationActive && currentField.key === 'address' && addressPart
+  // What the question card shows: during the voice interview the address is asked in 3 parts, the
+  // place of birth in steps.
+  const askedField = isConversationActive && ['address', 'place_of_birth'].includes(currentField.key) && addressPart
     ? { ...currentField, ...addressPart }
     : currentField;
 
@@ -3289,6 +3559,10 @@ const NewApplication = () => {
               onYes={() => tapConfirm('yes')}
               onNo={() => tapConfirm('no')}
               onTyped={(text) => tapConfirm('typed', text)}
+              onPick={(choice) => tapConfirm('pick', choice)}
+              onKeep={(text) => tapConfirm('keep', text)}
+              onSpell={() => tapConfirm('spell')}
+              onSkip={() => tapConfirm('skip')}
             />
           )}
 

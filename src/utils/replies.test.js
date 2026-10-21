@@ -15,8 +15,12 @@ describe('isYesAnswer (plan 001.6)', () => {
     expect(isYesAnswer('O, R, D, I, Z')).toBe(false);
   });
 
-  test('a long sentence is not a plain yes', () => {
-    expect(isYesAnswer('yes my name is maria clara santos dela cruz')).toBe(false);
+  test.each([
+    'Yes, thank you very much for watching this video',          // words the tiny model invented
+    'Opo, salamat po sa inyong lahat at sa tulong',
+    'Oo tama yan sige na po salamat kaayo',
+  ])('a yes with extra words after it is still a yes: %s (plan 001.8)', (reply) => {
+    expect(isYesAnswer(reply)).toBe(true);
   });
 });
 

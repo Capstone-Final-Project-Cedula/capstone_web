@@ -29,6 +29,15 @@ describe('combineSpelling (plan 001.6: a new spelling replaces, never glues)', (
     expect(combineSpelling('ordizz', 'delete')).toBe('ordiz');
   });
 
+  test('a lone lead-in letter before the word is not glued onto the spelling (plan 001.8)', () => {
+    expect(combineSpelling('', 'O, Ordiz, O, R, D, I, Z')).toBe('ordiz');
+    expect(combineSpelling('', 'B. Bautista. B-A-U-T-I-S-T-A')).toBe('bautista');
+  });
+
+  test('the last letter before trailing talk is kept', () => {
+    expect(combineSpelling('', 'S, A, N, T, O, S please')).toBe('santos');
+  });
+
   test('nothing spelled before: the letters are taken as they are', () => {
     expect(combineSpelling('', 'D, E, L, A, space, C, R, U, Z')).toBe('dela cruz');
   });
