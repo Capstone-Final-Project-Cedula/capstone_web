@@ -74,8 +74,9 @@ export const createPracticeRecorder = ({ savedForm = (field, value) => value, no
         last.reason = result?.reason || null;
       }
       const engine = last?.engine;
-      if (e.first === undefined && result?.ok && result.value && (engine === 'whisper' || engine === 'browser')) {
-        e.first = savedForm(key, result.value);
+      // A spoken "none" (an empty value) is a real first answer too: undefined means "not heard yet".
+      if (e.first === undefined && result?.ok && (engine === 'whisper' || engine === 'browser')) {
+        e.first = savedForm(key, result.value ?? '') ?? null;
       }
     },
 

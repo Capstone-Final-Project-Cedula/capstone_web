@@ -147,6 +147,18 @@ describe('practice session (plan 001.7)', () => {
     finish: jest.fn().mockResolvedValue({}),
   });
 
+  test('a spoken "none" is kept as the first value, so "none" then "Santos" counts as a correction', () => {
+    const rec = createPracticeRecorder({ savedForm: (field, value) => (String(value).trim() || null) });
+    rec.asked('middle_name');
+    rec.heard('middle_name', { text: 'none', engine: 'whisper', seconds: 0.6 });
+    rec.parsed('middle_name', { ok: true, value: '' });
+    expect(rec.accept('middle_name', '').first_value).toBeNull();
+    rec.asked('middle_name');                     // revisit
+    rec.heard('middle_name', { text: 'santos', engine: 'whisper', seconds: 0.6 });
+    rec.parsed('middle_name', { ok: true, value: 'Santos' });
+    expect(rec.accept('middle_name', 'Santos').first_value).toBeNull();   // not replaced by "Santos"
+  });
+
   test('closing the tab sends a keepalive finish at once, without waiting for the queue', async () => {
     const api = { ...makeApi({ enabled: true, session_id: 7 }), finishKeepalive: jest.fn() };
     const session = createPracticeSession(api);
