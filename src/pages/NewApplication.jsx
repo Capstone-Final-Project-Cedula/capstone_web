@@ -1355,6 +1355,10 @@ function useConversationEngine({
         }
         if (meta.error) {
           practice.rec.heard(logKeyOf(asked), { text: '', engine: meta.engine, reason: meta.error });
+          if (isBirthStepOf(birthRef.current, fieldIndex)) {   // one miss budget per place-of-birth step
+            latestRef.current.handleBirthResult(fieldIndex, { ok: false, reason: meta.error, message: 'Sorry, I had trouble hearing that. Please say it again.' });
+            return;
+          }
           if (countAttempt(fieldIndex) >= MAX_ATTEMPTS) {
             giveUpOnField(fieldIndex);
             return;
@@ -1632,7 +1636,8 @@ function useConversationEngine({
         }
         const spellable = SPELLABLE_KEYS.has(INTERVIEW_FIELDS[fieldIndex].key) && !isBirthStepOf(birthRef.current, fieldIndex);
         if (spellable && looksSpelled(reply)) {
-          // Letters instead of yes/no: they are spelling it (or adding to their spelling).
+          // Letters instead of yes/no: they are spelling it (or adding to their spelling). A try too.
+          if (countAttempt(fieldIndex) >= MAX_ATTEMPTS) { giveUpOnField(fieldIndex); return; }
           spelledRef.current = combineSpelling(spelledRef.current, reply);
           finishSpelling(fieldIndex);
         } else if (isNoAnswer(reply) || /^(no|hindi|mali)\b/i.test(normalizeReply(reply))) {
@@ -1720,7 +1725,8 @@ function useConversationEngine({
     // kept exactly as spelled, never "corrected" by the system.
     let result;
     try {
-      result = await interpretAnswer(field.key, spelledValue);
+      // Spelled by voice, a place of birth is checked like a spoken one: only a list place, never offline.
+      result = await interpretAnswer(field.key, spelledValue, { spoken: field.key === 'place_of_birth' && !typed });
     } catch {
       return;
     }
@@ -1732,6 +1738,11 @@ function useConversationEngine({
         // Typed in the box: say why and keep the box open (a date or number is not spelled).
         setConfirmView((view) => (view ? { ...view, error: result.message } : view));
         speak(result.message);
+        return;
+      }
+      if (field.key === 'place_of_birth') {
+        // Not a list place (or the check is down): the closest places to tap, or type it.
+        showBirthChoices(fieldIndex, result.suggestions || [], result.reason === 'offline' ? { message: result.message } : {});
         return;
       }
       if (countAttempt(fieldIndex) >= MAX_ATTEMPTS) { giveUpOnField(fieldIndex); return; }   // every try counts
@@ -1857,6 +1868,10 @@ function useConversationEngine({
 
     if (!spokenValue && !asked.optional) {
       recordHeard();
+      if (isBirthStepOf(birthRef.current, fieldIndex)) {   // silence is a miss of the step, like a wrong answer
+        handleBirthResult(fieldIndex, { ok: false, reason: 'empty', message: pickRandom(RETRY_PHRASES) });
+        return;
+      }
       if (countAttempt(fieldIndex) >= MAX_ATTEMPTS) {
         giveUpOnField(fieldIndex);
         return;
@@ -2261,7 +2276,7 @@ function useConversationEngine({
     });
   }, [listenOnce, speak, issueNow, setAnswers, setStatusMessage, setPhase, addChatMessage]);
 
-  latestRef.current = { startVoiceReview, openMissingTyping, listenForMissingChoice, confirmAnswer, showBirthChoices };
+  latestRef.current = { startVoiceReview, openMissingTyping, listenForMissingChoice, confirmAnswer, showBirthChoices, handleBirthResult };
 
   return {
     isConversationActive,

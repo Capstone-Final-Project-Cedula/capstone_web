@@ -62,7 +62,8 @@ export const onBirthResult = (birth, result) => {
   if (result?.ok && result.value) {
     const code = String(result.normalized || '');
     if (/^\d+$/.test(code)) {
-      return { birth: { ...birth, step: 'town', province: { code, name: result.value }, misses: 0 }, action: 'town' };
+      // The province's suggestions are not the town's: cleared, so the town fallback lists its towns.
+      return { birth: { ...birth, step: 'town', province: { code, name: result.value }, misses: 0, suggestions: [] }, action: 'town' };
     }
     return { birth, action: 'confirm' };
   }
@@ -84,7 +85,10 @@ export const onBirthNo = (birth) => {
 export const onBirthPick = (birth, choice) => {
   if (!choice?.value) return { birth, action: 'none' };
   if (choice.province) {
-    return { birth: { ...birth, step: 'town', province: { code: choice.province, name: choice.value }, misses: 0 }, action: 'town' };
+    return {
+      birth: { ...birth, step: 'town', province: { code: choice.province, name: choice.value }, misses: 0, suggestions: [] },
+      action: 'town',
+    };
   }
   return {
     birth,

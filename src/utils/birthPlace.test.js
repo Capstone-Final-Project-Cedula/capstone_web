@@ -28,6 +28,12 @@ describe('place of birth steps (plan 001.8)', () => {
     expect(birthQuestion(birth).question).toContain('Bukidnon');
   });
 
+  test('the province step suggestions are cleared for the town step (Codex, plan 001.8)', () => {
+    const before = { ...startBirth(''), suggestions: [{ value: 'Bukidnon', province: '1001300000' }] };
+    expect(onBirthResult(before, { ok: true, value: 'Bukidnon', normalized: '1001300000' }).birth.suggestions).toEqual([]);
+    expect(onBirthPick(before, { value: 'Bukidnon', province: '1001300000' }).birth.suggestions).toEqual([]);
+  });
+
   test('a whole place is read back', () => {
     const result = { ok: true, value: 'Iligan City', normalized: '' };
     expect(onBirthResult(startBirth(''), result).action).toBe('confirm');
