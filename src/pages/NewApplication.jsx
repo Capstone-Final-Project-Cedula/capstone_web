@@ -2449,6 +2449,13 @@ const NewApplication = () => {
     }
   }, [chatHistory, statusMessage]);
 
+  // Practice log: closing or reloading the tab does not unmount React, so finish on pagehide too.
+  useEffect(() => {
+    const onPageHide = () => practice.session.finish({ keepalive: true });
+    window.addEventListener('pagehide', onPageHide);
+    return () => window.removeEventListener('pagehide', onPageHide);
+  }, [practice]);
+
   // ── Cleanup on unmount ──
   useEffect(() => {
     return () => {

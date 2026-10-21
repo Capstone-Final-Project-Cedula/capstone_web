@@ -85,8 +85,30 @@ describe('practice recorder (plan 001.7)', () => {
     rec.heard('sex', { text: 'female', engine: 'browser' });
     rec.parsed('sex', { ok: true, value: 'Female' });
     expect(rec.accept('sex', 'Female')).toMatchObject({ accepted_engine: 'browser', first_value: 'Female' });
+    rec.reset();                                  // a new applicant starts from nothing
     rec.asked('sex');
     expect(rec.skip('sex').attempts).toBe(0);
+  });
+
+  test('a question visited again keeps its first voice value and tries, so the correction counts', () => {
+    const c = clock();
+    const rec = createPracticeRecorder({ now: c.now });
+    rec.asked('surname');
+    rec.heard('surname', { text: 'bakus', engine: 'whisper', seconds: 0.8 });
+    rec.parsed('surname', { ok: true, value: 'Bakus' });
+    const first = rec.accept('surname', 'Bakus');
+    expect(first.attempt_details).toHaveLength(1);
+
+    c.advance(60000);
+    rec.asked('surname');                         // "go back to my surname"
+    c.advance(2000);
+    rec.heard('surname', { text: 'bacus', engine: 'whisper', seconds: 0.7 });
+    rec.parsed('surname', { ok: true, value: 'Bacus' });
+    const again = rec.accept('surname', 'Bacus');
+    expect(again.first_value).toBe('Bakus');      // not replaced by the correction
+    expect(again.attempts).toBe(2);
+    expect(again.seconds).toBe(2);                // the clock restarted at the revisit
+    expect(first.attempt_details).toHaveLength(1); // the earlier note was not changed afterwards
   });
 
   test('address parts are noted one by one, then one joined summary row with the total seconds', () => {
@@ -123,6 +145,17 @@ describe('practice session (plan 001.7)', () => {
     start: jest.fn().mockResolvedValue({ data: start }),
     addAnswer: jest.fn().mockResolvedValue({}),
     finish: jest.fn().mockResolvedValue({}),
+  });
+
+  test('closing the tab sends a keepalive finish at once, without waiting for the queue', async () => {
+    const api = { ...makeApi({ enabled: true, session_id: 7 }), finishKeepalive: jest.fn() };
+    const session = createPracticeSession(api);
+    session.start();
+    await flush();
+    session.finish({ keepalive: true });
+    expect(api.finishKeepalive).toHaveBeenCalledWith(7);
+    await flush();
+    expect(api.finish).not.toHaveBeenCalled();
   });
 
   test('log off: nothing is ever sent after start', async () => {

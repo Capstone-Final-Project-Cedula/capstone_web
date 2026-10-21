@@ -65,6 +65,8 @@ const PracticeLog = () => {
   const [selected, setSelected] = useState(null);
   const [detail, setDetail] = useState(null);
   const [detailLoading, setDetailLoading] = useState(false);
+  const [detailError, setDetailError] = useState('');
+  const [detailKey, setDetailKey] = useState(0);
 
   useEffect(() => {
     let cancelled = false;
@@ -96,6 +98,8 @@ const PracticeLog = () => {
       return undefined;
     }
     let cancelled = false;
+    setDetail(null);          // never show the previous session's answers under this one
+    setDetailError('');
     setDetailLoading(true);
     practiceLogAPI
       .getSession(selected)
@@ -103,7 +107,7 @@ const PracticeLog = () => {
         if (!cancelled) setDetail(response.data);
       })
       .catch((err) => {
-        if (!cancelled) toast.error(getApiErrorMessage(err, 'Unable to load that session.'));
+        if (!cancelled) setDetailError(getApiErrorMessage(err, 'Unable to load that session.'));
       })
       .finally(() => {
         if (!cancelled) setDetailLoading(false);
@@ -111,7 +115,7 @@ const PracticeLog = () => {
     return () => {
       cancelled = true;
     };
-  }, [selected]);
+  }, [selected, detailKey]);
 
   const changeMode = useCallback(async (mode) => {
     setSavingMode(true);
@@ -172,7 +176,7 @@ const PracticeLog = () => {
                 {['test', 'real'].map((mode) => (
                   <Button
                     key={mode}
-                    size="sm"
+                    size="lg"
                     variant={status.mode === mode ? 'primary' : 'secondary'}
                     aria-pressed={status.mode === mode}
                     disabled={!enabled || savingMode}
@@ -236,7 +240,7 @@ const PracticeLog = () => {
                         type="button"
                         onClick={() => setSelected(selected === row.id ? null : row.id)}
                         aria-expanded={selected === row.id}
-                        className="text-left font-medium text-[var(--color-primary)] hover:underline focus-visible:outline-2 focus-visible:outline-[var(--color-primary)] rounded-[var(--radius-sm)]"
+                        className="inline-flex min-h-[44px] items-center text-left font-medium text-[var(--color-primary)] hover:underline focus-visible:outline-2 focus-visible:outline-[var(--color-primary)] rounded-[var(--radius-sm)]"
                       >
                         {formatTime(row.started_at)}
                       </button>
@@ -295,7 +299,19 @@ const PracticeLog = () => {
             <table className="w-full text-sm">
               <TableHead labels={['Question', 'Tries', 'First voice value', 'Accepted', 'By', 'Seconds', 'Saved', 'Changed']} />
               <tbody className="divide-y divide-[var(--color-neutral-100)]">
-                {detailLoading || !detail ? (
+                {detailError ? (
+                  <tr>
+                    <td colSpan="8">
+                      <EmptyState
+                        icon={ShieldCheck}
+                        title="Could not load this session"
+                        description={detailError}
+                        actionLabel="Try again"
+                        onAction={() => setDetailKey((key) => key + 1)}
+                      />
+                    </td>
+                  </tr>
+                ) : detailLoading || !detail || detail.id !== selected ? (
                   Array.from({ length: 4 }).map((_, i) => <SkeletonTableRow key={i} columns={8} />)
                 ) : detail.answers.length === 0 ? (
                   <tr>

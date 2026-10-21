@@ -29,13 +29,15 @@ export const createPracticeRecorder = ({ savedForm = (field, value) => value, no
     const note = {
       field: key,
       attempts: e.attempts.length,
-      attempt_details: e.attempts,
+      attempt_details: [...e.attempts],
       first_value: e.first === undefined ? null : e.first,
       accepted_value: value === undefined || value === null || value === '' ? null : text500(value),
       accepted_engine: engine || last?.engine || 'whisper',
       seconds: elapsed,
     };
-    delete questions[key];
+    // A question visited again ("go back to my surname") keeps its first voice value and its tries, so a
+    // correction still shows as changed; only reset() (a new applicant) clears them.
+    e.askedAt = null;
     if (key.startsWith(ADDRESS_PART_PREFIX)) {
       addressSeconds += elapsed || 0;
       addressEngine = note.accepted_engine;
@@ -153,11 +155,18 @@ export const createPracticeSession = (api) => {
       current = null;
     },
 
-    /** Leaving the page or starting over before the CTC was issued. */
-    finish() {
+    /**
+     * Leaving the page or starting over before the CTC was issued. `keepalive`: the tab is closing or
+     * reloading, so send at once with a request that outlives the page (only if the id is already known).
+     */
+    finish({ keepalive = false } = {}) {
       const session = current;
       current = null;
       if (!session) return;
+      if (keepalive && session.id && api.finishKeepalive) {
+        api.finishKeepalive(session.id);
+        return;
+      }
       run(session, async () => { if (session.id) await api.finish(session.id); });
     },
   };

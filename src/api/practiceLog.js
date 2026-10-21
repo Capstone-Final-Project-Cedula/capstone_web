@@ -7,6 +7,19 @@ export const practiceLogAPI = {
   addAnswer: (sessionId, note) => apiClient.post(`/practice-log/sessions/${sessionId}/answers`, note),
   finish: (sessionId) => apiClient.post(`/practice-log/sessions/${sessionId}/finish`),
 
+  // The tab is closing: a plain fetch with keepalive finishes after the page is gone (axios cannot).
+  finishKeepalive: (sessionId) => {
+    try {
+      fetch(`${apiClient.defaults.baseURL}/practice-log/sessions/${sessionId}/finish`, {
+        method: 'POST',
+        keepalive: true,
+        headers: { Authorization: `Bearer ${localStorage.getItem('access_token') || ''}` },
+      }).catch(() => {});
+    } catch {
+      // best effort
+    }
+  },
+
   // Admin only.
   getStatus: () => apiClient.get('/practice-log/status'),
   setMode: (mode) => apiClient.put('/practice-log/mode', { mode }),
