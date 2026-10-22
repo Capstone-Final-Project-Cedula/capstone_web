@@ -20,17 +20,19 @@ const loadTowns = async () => {
 const AddressPicker = ({ value = '', onChange, label = 'Address', error, hideLabel = false }) => {
   const [typing, setTyping] = useState(false);
   const [town, setTown] = useState(null);           // { code, value }
-  const [barangays, setBarangays] = useState([]);
+  const [barangays, setBarangays] = useState(null);   // null: loading; [] and `failed`: could not load
+  const [failed, setFailed] = useState(false);
   const [barangay, setBarangay] = useState(null);   // { name, label }
   const [purok, setPurok] = useState('');
 
   useEffect(() => {
     if (!town) return undefined;
     let live = true;
-    setBarangays([]);
+    setBarangays(null);
+    setFailed(false);
     placesAPI.barangays(town.code)
       .then(({ data }) => { if (live) setBarangays(data); })
-      .catch(() => { if (live) setBarangays([]); });
+      .catch(() => { if (live) { setBarangays([]); setFailed(true); } });
     return () => { live = false; };
   }, [town]);
 
@@ -73,9 +75,23 @@ const AddressPicker = ({ value = '', onChange, label = 'Address', error, hideLab
             minChars={0}
             search={async (q) => filterOptions(await loadTowns(), q, (t) => t.value)
               .map((t) => ({ key: t.code, label: t.value, code: t.code }))}
-            onPick={(o) => { setTown({ code: o.code, value: o.label }); setBarangay(null); }}
+            onPick={(o) => {
+              setTown({ code: o.code, value: o.label });
+              setBarangay(null);
+              // Another town: the address is not finished until its barangay is picked, so the old one cannot be
+              // saved by mistake (Codex verify round 2, plan 002.1).
+              onChange('', {});
+            }}
           />
-          {town && (
+          {town && barangays === null && (
+            <p className="text-sm text-[var(--color-neutral-500)]" role="status">Loading the barangays…</p>
+          )}
+          {town && failed && (
+            <p className="text-sm text-[var(--color-error)] break-words" role="alert">
+              The barangays could not be loaded. Check the connection, or type the address.
+            </p>
+          )}
+          {town && barangays !== null && !failed && (
             <SearchSelect
               key={town.code}
               label="Barangay"
