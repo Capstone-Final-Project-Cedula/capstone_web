@@ -48,7 +48,10 @@ const SearchSelect = ({
     return () => clearTimeout(timer);
   }, [query, minChars]);
 
-  const close = () => { setOpen(false); setQuery(null); setActive(0); };
+  // A new query or closing: the old results can no longer be picked, and a late answer is ignored
+  // (Codex verify, plan 002.1: Enter could pick a result of the previous search).
+  const forget = () => { turn.current += 1; setOptions([]); setLoading(false); };
+  const close = () => { forget(); setOpen(false); setQuery(null); setActive(0); };
 
   const choose = (option) => {
     if (!option) return;
@@ -88,7 +91,7 @@ const SearchSelect = ({
         aria-controls={listId}
         aria-autocomplete="list"
         aria-activedescendant={open && choices.length ? optionId(active) : undefined}
-        onChange={(e) => { setQuery(e.target.value); setOpen(true); setActive(0); }}
+        onChange={(e) => { forget(); setQuery(e.target.value); setOpen(true); setActive(0); }}
         onFocus={() => {
           if (minChars === 0 && query === null) setQuery('');   // a short list: show it all at once
           setOpen(true);

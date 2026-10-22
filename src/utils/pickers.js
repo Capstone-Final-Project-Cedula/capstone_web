@@ -97,6 +97,20 @@ export const filterOptions = (options, query, toText = (o) => o) => {
 const same = (a, b) => String(a || '').trim().toLowerCase() === String(b || '').trim().toLowerCase();
 
 /**
+ * The answers that are still exactly a list pick (with its code): { key: value }. They are saved as picked,
+ * never run through the whole-address or place parser again, which can rewrite a picked address (Codex
+ * verify, plan 002.1); /forms/issue still checks them against the list by their code.
+ */
+export const unchangedPicks = (answers, picked = {}) => {
+  const out = {};
+  Object.entries(picked).forEach(([key, pick]) => {
+    if ((pick?.meta?.code || pick?.meta?.townCode) && String(answers?.[key] ?? '').trim()
+      && same(pick.value, answers[key])) out[key] = answers[key];
+  });
+  return out;
+};
+
+/**
  * The list codes to send with /forms/issue: only for an answer that is still exactly what was picked
  * (`picked`: { place_of_birth: { value, meta: { code } }, address: { value, meta: { townCode, barangay } } }).
  * A later spoken or typed change drops them, so the server never checks a stale pick.

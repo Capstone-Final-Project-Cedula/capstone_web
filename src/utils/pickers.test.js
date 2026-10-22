@@ -1,5 +1,6 @@
 import {
   dateProblem, filterOptions, fromIsoDate, localTodayIso, numberProblem, pickedCodes, pickerKind, toIsoDate,
+  unchangedPicks,
 } from './pickers';
 import { joinAddress } from './address';
 
@@ -53,6 +54,18 @@ describe('typing pickers (plan 002.1)', () => {
     expect(filterOptions(towns, 'bukid')).toEqual(['Baungon, Bukidnon', 'Malaybalay City, Bukidnon']);
     expect(filterOptions(towns, '')).toEqual(towns);
     expect(filterOptions(towns, 'xyz')).toEqual([]);
+  });
+
+  test('an answer still exactly as picked is kept as picked, never parsed again (Codex verify)', () => {
+    const picked = {
+      address: { value: 'Purok 7, Barangay Tomas L. Cabili, Iligan City', meta: { townCode: '1', barangay: 'Tomas L. Cabili' } },
+      place_of_birth: { value: 'Tokyo', meta: { freeText: true } },       // typed, no code: checked as usual
+      sex: { value: 'Female', meta: {} },
+    };
+    const answers = { address: 'Purok 7, Barangay Tomas L. Cabili, Iligan City', place_of_birth: 'Tokyo', sex: 'Female' };
+    expect(unchangedPicks(answers, picked)).toEqual({ address: 'Purok 7, Barangay Tomas L. Cabili, Iligan City' });
+    expect(unchangedPicks({ ...answers, address: 'Barangay Poblacion, Kalilangan, Bukidnon' }, picked)).toEqual({});
+    expect(unchangedPicks({ address: '' }, picked)).toEqual({});
   });
 
   test('list codes go with the answer only while it is still what was picked', () => {

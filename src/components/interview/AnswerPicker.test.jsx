@@ -114,6 +114,21 @@ describe('AnswerPicker saves what the voice path saves (plan 002.1)', () => {
     expect(onChange).toHaveBeenLastCalledWith('Tokyo', { freeText: true });
   });
 
+  test('Enter never picks a result of the previous search (Codex verify)', async () => {
+    jest.useFakeTimers();
+    placesAPI.birth.mockResolvedValue({ data: [{ code: '1031210000', value: 'Malaybalay City, Bukidnon' }] });
+    const onChange = jest.fn();
+    render({ fieldKey: 'place_of_birth', onChange });
+    const input = container.querySelector('input[role="combobox"]');
+    act(() => type(input, 'malay'));
+    await act(async () => { jest.advanceTimersByTime(250); });
+    expect(container.textContent).toMatch(/Malaybalay City/);
+    act(() => type(input, 'Tokyo'));                                   // the new search is still pending
+    act(() => input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })));
+    expect(onChange).not.toHaveBeenCalledWith('Malaybalay City, Bukidnon', expect.anything());
+    expect(onChange).toHaveBeenLastCalledWith('Tokyo', { freeText: true });   // only the typed text is there
+  });
+
   test('names stay free text; occupation suggests but allows any text', () => {
     const onChange = jest.fn();
     render({ fieldKey: 'surname', onChange });

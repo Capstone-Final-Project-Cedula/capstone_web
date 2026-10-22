@@ -43,7 +43,7 @@ import {
   missingRequiredIndexes as missingRequiredIn, parseMissingChoice,
 } from '../utils/endStep';
 import { createPracticeRecorder, createPracticeSession } from '../utils/practiceLog';
-import { pickedCodes, pickerKind } from '../utils/pickers';
+import { pickedCodes, pickerKind, unchangedPicks } from '../utils/pickers';
 import { Keyboard, Mic } from 'lucide-react';
 import Button from '../components/ui/Button';
 import Badge from '../components/ui/Badge';
@@ -2111,7 +2111,8 @@ function useConversationEngine({
     setMissingView((view) => (view ? { ...view, checking: true, error: '' } : view));
     let result;
     try {
-      result = await interpretAnswer(field.key, typed);
+      // Picked from the list (plan 002.1): kept as picked, not parsed again (it can rewrite an address).
+      result = meta.code || meta.townCode ? { ok: true, value: typed, display: typed } : await interpretAnswer(field.key, typed);
     } catch {
       return;   // session expired: the API client sends the user to the login page
     }
@@ -2871,7 +2872,9 @@ const NewApplication = () => {
     setIsChecking(true);
     let result;
     try {
-      result = await interpretAnswer(field.key, value);
+      // A place or address still exactly as picked from the list is kept as picked (plan 002.1).
+      const kept = unchangedPicks({ [field.key]: value }, pickedRef.current)[field.key];
+      result = kept !== undefined ? { ok: true, value: kept, display: kept } : await interpretAnswer(field.key, value);
     } catch {
       return false;
     } finally {
@@ -3129,17 +3132,19 @@ const NewApplication = () => {
     let checkedAnswers = latestAnswers;
     try {
       const { data } = await extractionAPI.checkAnswers(latestAnswers);
-      if (!data.ok) {
-        const problems = Object.fromEntries(
-          Object.entries(data.results).filter(([, r]) => !r.ok).map(([key, r]) => [key, r.message])
-        );
+      // Picks still as picked are kept as they are (plan 002.1); the server checks them by their list code.
+      const kept = unchangedPicks(latestAnswers, pickedRef.current);
+      const problems = Object.fromEntries(
+        Object.entries(data.results).filter(([key, r]) => !r.ok && !(key in kept)).map(([key, r]) => [key, r.message])
+      );
+      if (Object.keys(problems).length) {
         const labels = Object.keys(problems).map((key) => FIELD_MAP[key]?.label || key).join(', ');
         setReviewErrors(problems);
         setStatusMessage(`Please check: ${labels}`);
         toast.error(`Please check: ${labels}`);
         return stopAtReview(`Some answers need to be checked: ${labels}. I moved you to the review page. Please look at the screen.`);
       }
-      checkedAnswers = Object.fromEntries(Object.entries(data.results).map(([key, r]) => [key, r.value ?? '']));
+      checkedAnswers = { ...Object.fromEntries(Object.entries(data.results).map(([key, r]) => [key, r.value ?? ''])), ...kept };
       answersRef.current = checkedAnswers;
       setAnswers(checkedAnswers);
       setReviewErrors({});
