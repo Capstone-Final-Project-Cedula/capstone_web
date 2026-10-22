@@ -87,7 +87,8 @@ export const createPracticeRecorder = ({ savedForm = (field, value) => value, no
       if (last) {
         last.parsed = text500(result?.value);
         last.ok = Boolean(result?.ok);
-        last.reason = result?.reason || null;
+        // An empty turn keeps why it was empty (dropped-echo ...); the check's own "empty" says less.
+        last.reason = last.heard === '' && last.reason ? last.reason : result?.reason || null;
       }
       const engine = last?.engine;
       // A spoken "none" (an empty value) is a real first answer too: undefined means "not heard yet".

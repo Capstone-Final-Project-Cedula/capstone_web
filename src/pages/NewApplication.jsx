@@ -1612,8 +1612,17 @@ function useConversationEngine({
         const spellable = SPELLABLE_KEYS.has(INTERVIEW_FIELDS[fieldIndex].key) && !isBirthStepOf(birthRef.current, fieldIndex);
         if (spellable && looksSpelled(reply)) {
           // Letters instead of yes/no: they are spelling it (or adding to their spelling). From now on the
-          // spelled tries count; the letters are read back, and only a failed spelling is a try.
-          enterSpelling(fieldIndex);
+          // spelled tries count. Already spelling: the read-back was wrong, so this is one spelled try
+          // (Codex verify, plan 002.2: otherwise new spellings could go on without a limit).
+          if (ladderOf(fieldIndex).spelling) {
+            if (countMissIn(ladderRef.current, addressRef.current, fieldIndex) === 'skip') {
+              spelledRef.current = '';
+              skipField(fieldIndex);
+              return;
+            }
+          } else {
+            enterSpelling(fieldIndex);
+          }
           spelledRef.current = combineSpelling(spelledRef.current, reply);
           finishSpelling(fieldIndex, { heardBy: meta });
         } else if (isNoReply(reply)) {
@@ -1680,18 +1689,32 @@ function useConversationEngine({
       onEnd: (heard, meta) => {
         if (!conversationActiveRef.current || turn !== confirmTurnRef.current) return;
         const reply = heard.trim();
+        const key = INTERVIEW_FIELDS[fieldIndex].key;
+        // Each turn below is one spelled try (plan 002.2), noted with why it gave no letters.
+        const noted = (reason) => practice.rec.heard(key, { text: reply, engine: meta?.engine || 'whisper', seconds: meta?.seconds, reason });
         if (!reply) {
-          // No letters heard: a spelled try like a wrong one (each turn counts once, plan 002.2).
+          noted(meta?.reason || meta?.error || 'no-speech');
           latestRef.current.missAndContinue(fieldIndex, () => {}, { intro: 'I did not hear any letters.' });
           return;
         }
         addChatMessage('user', reply);
+        if (isNoReply(reply) && !looksSpelled(reply)) {
+          // "Oh no" while spelling is a refusal, not the letters O, N, O (Codex verify, plan 002.2).
+          noted('refused');
+          latestRef.current.missAndContinue(fieldIndex, () => {}, { intro: "Okay. Let's spell it once more." });
+          return;
+        }
         spelledRef.current = combineSpelling(spelledRef.current, reply);
+        if (!spelledRef.current.trim()) {
+          noted('no-letters');   // "done", "space": nothing to read back
+          latestRef.current.missAndContinue(fieldIndex, () => {}, { intro: 'I did not hear any letters.' });
+          return;
+        }
         setDraftAnswer(spelledRef.current.toUpperCase());
         finishSpelling(fieldIndex, { heardBy: meta });
       },
     });
-  }, [listenOnce, setDraftAnswer, setPhase, setStatusMessage, addChatMessage]);
+  }, [listenOnce, setDraftAnswer, setPhase, setStatusMessage, addChatMessage, practice]);
 
   // `typed`: the applicant (or staff) typed the correction on screen, so it is saved
   // without another "is that correct?". `heardBy`: the recorder's meta of spoken letters (timing line).
@@ -1699,7 +1722,7 @@ function useConversationEngine({
     const field = INTERVIEW_FIELDS[fieldIndex];
     const letters = (typed || spelledRef.current).trim();
     if (!letters) {
-      startSpelling(fieldIndex);
+      if (!typed) latestRef.current.missAndContinue(fieldIndex, () => {}, { intro: 'I did not hear any letters.' });
       return;
     }
     // Typed text keeps its own capitals ("McArthur") unless it was all one case.
