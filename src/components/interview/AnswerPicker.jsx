@@ -1,4 +1,4 @@
-import React, { useEffect, useId, useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import Input from '../ui/Input';
 import Button from '../ui/Button';
 import SearchSelect from '../ui/SearchSelect';
@@ -6,7 +6,7 @@ import AddressPicker from './AddressPicker';
 import { placesAPI } from '../../api/places';
 import { CIVIL_STATUS_OPTIONS, SEX_OPTIONS } from '../../utils/requiredFields';
 import {
-  NUMBER_LIMITS, OCCUPATIONS, dateProblem, fromIsoDate, localTodayIso, numberProblem, pickerKind, toIsoDate,
+  NUMBER_LIMITS, dateProblem, fromIsoDate, localTodayIso, numberProblem, pickerKind, toIsoDate,
 } from '../../utils/pickers';
 
 const legendClass = 'mb-1.5 block text-sm font-medium text-[var(--color-neutral-700)]';
@@ -46,7 +46,6 @@ const AnswerPicker = ({
   // hideLabel: the label is already on screen (a review row); the control keeps it as its accessible name.
   const shown = (text) => (hideLabel ? undefined : text);
   const named = (text) => (hideLabel ? text : undefined);
-  const listId = useId();
   const [problem, setProblem] = useState('');
   const isFilipino = !value || /^filipino$/i.test(String(value).trim());
   // "Other" tapped: kept even while its text box is still empty. Otherwise it follows the value, so a
@@ -162,24 +161,16 @@ const AnswerPicker = ({
   }
 
   return (
-    <>
-      <Input
-        label={shown(label)}
-        aria-label={named(label)}
-        value={value ?? ''}
-        error={error}
-        autoFocus={autoFocus}
-        autoComplete="off"
-        list={kind === 'occupation' ? listId : undefined}
-        placeholder={kind === 'occupation' ? 'Example: Farmer' : undefined}
-        onChange={(e) => onChange(e.target.value, {})}
-      />
-      {kind === 'occupation' && (
-        <datalist id={listId}>
-          {OCCUPATIONS.map((o) => <option key={o} value={o} />)}
-        </datalist>
-      )}
-    </>
+    <Input
+      label={shown(label)}
+      aria-label={named(label)}
+      value={value ?? ''}
+      error={error}
+      autoFocus={autoFocus}
+      autoComplete="off"
+      placeholder={kind === 'occupation' ? 'Example: Farmer' : undefined}
+      onChange={(e) => onChange(e.target.value, {})}
+    />
   );
 };
 

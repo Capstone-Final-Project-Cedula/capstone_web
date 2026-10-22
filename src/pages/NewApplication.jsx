@@ -14,7 +14,6 @@ import {
   FaUserTie,
   FaExclamationTriangle,
   FaBrain,
-  FaCommentDots,
   FaFileAlt,
   FaTimes,
 } from 'react-icons/fa';
@@ -1080,7 +1079,10 @@ function useWhisperListener() {
         if (!speechStart) speechStart = now;
         lastVoice = now;
       }
-      if (speechStart && now - lastVoice > cfg.silenceMs) finish();
+      if (speechStart && now - lastVoice > cfg.silenceMs) {
+        if (lastVoice - speechStart >= cfg.minSpeechMs) finish();
+        else { speechStart = 0; lastVoice = 0; } // A click or brief noise is not a completed answer.
+      }
       else if (!speechStart && elapsed > cfg.noSpeechMs) finish();
       else if (elapsed > cfg.maxMs) finish();
     }, cfg.tickMs);
@@ -1163,7 +1165,9 @@ function useConversationEngine({
   // is only a backup if the Whisper server fails twice in a row.
   const engineRef = useRef('whisper');
   const whisperFailuresRef = useRef(0);
+  const answerTurnRef = useRef(0);
   const stopBrowserListening = useCallback(() => {
+    answerTurnRef.current += 1;
     whisper.stopListening();
     browser.stopListening();
   }, [whisper, browser]);
@@ -1171,7 +1175,15 @@ function useConversationEngine({
   // One listening turn with the active engine. onEnd(text, meta) — meta.engine says who heard it.
   const listenOnce = useCallback((opts) => {
     if (engineRef.current === 'browser') {
-      browser.listenOnce({ ...opts, onEnd: (text) => opts.onEnd?.(text, { engine: 'browser' }) });
+      let failure = null;
+      browser.listenOnce({
+        ...opts,
+        onError: (error) => {
+          if (error !== 'no-speech') failure = error;
+          opts.onError?.(error);
+        },
+        onEnd: (text) => opts.onEnd?.(text, { engine: 'browser', ...(failure ? { error: failure } : {}) }),
+      });
       return;
     }
     whisper.listenOnce({
@@ -1368,6 +1380,7 @@ function useConversationEngine({
   // Whisper -> (handleSpokenAnswer) DistilBERT + Regex -> voice read-back.
   const listenForAnswer = useCallback((fieldIndex) => {
     if (!conversationActiveRef.current) return;
+    const turn = ++answerTurnRef.current;
     const asked = askedOf(addressRef.current, birthRef.current, fieldIndex);
     listenOnce({
       fieldKey: asked.key,   // Whisper gets a hint for this question (e.g. the barangays of the town said)
@@ -1379,7 +1392,18 @@ function useConversationEngine({
         setStatusMessage('Listening for your answer...');
       },
       onEnd: (heard, meta = {}) => {
-        if (!conversationActiveRef.current) return;
+        if (!conversationActiveRef.current || turn !== answerTurnRef.current || fieldIndex !== currentFieldIndexRef.current
+          || asked.key !== askedOf(addressRef.current, birthRef.current, fieldIndex).key) return;
+        const completedTurn = ++answerTurnRef.current;
+        if (!heard.trim() && !meta.error && (meta.engine === 'browser'
+          || meta.reason === 'browser-no-speech' || meta.reason === 'too-short')) {
+          // Keep recording in bounded turns while the applicant thinks. Silence is not an answer or a failed try.
+          window.setTimeout(() => {
+            if (conversationActiveRef.current && completedTurn === answerTurnRef.current && fieldIndex === currentFieldIndexRef.current
+              && asked.key === askedOf(addressRef.current, birthRef.current, fieldIndex).key) listenForAnswer(fieldIndex);
+          }, 150);
+          return;
+        }
         if (meta.error === 'mic-blocked') {
           setVoiceError('The microphone is blocked. Allow microphone access in the browser, or type the answers.');
           setIsConversationActive(false);
@@ -1553,16 +1577,22 @@ function useConversationEngine({
     });
   }, [speak, askQuestion, clearConfirmView, addChatMessage]);
 
-  const listenForConfirmation = useCallback((fieldIndex, result, silentTries = 0) => {
+  const listenForConfirmation = useCallback((fieldIndex, result) => {
     const turn = confirmTurnRef.current;
     listenOnce({
       fieldKey: 'confirm',             // Whisper hint: yes / no / opo / hindi (fast "tiny" model)
-      vad: { noSpeechMs: 5000, silenceMs: 600 },   // yes/no is short: end the turn sooner
+      vad: { noSpeechMs: VAD.noSpeechMs, silenceMs: 600 },   // allow time to reply; stop shortly after speech
       onStart: () => {
         setPhase(PHASE.LISTENING);
         setStatusMessage('Listening for yes or no...');
       },
-      onError: () => {},
+      onError: (error) => {
+        if (error === 'no-speech' || !conversationActiveRef.current || turn !== confirmTurnRef.current) return;
+        // Keep the answer pending, and ignore this failed listener's later onEnd.
+        confirmTurnRef.current += 1;
+        setPhase(PHASE.CONFIRMING);
+        setVoiceError('I could not hear your confirmation. Please tap Yes or No below.');
+      },
       onEnd: (heard, meta = {}) => {
         if (!conversationActiveRef.current || turn !== confirmTurnRef.current) return;
         const reply = heard.trim();
@@ -1578,13 +1608,8 @@ function useConversationEngine({
             fixAnswer(fieldIndex);   // no reply to the shortcut: ask the province
             return;
           }
-          if (silentTries >= 1) {
-            // Still no reply: keep the answer; it stays on screen and is checked again at the review.
-            spelledRef.current = '';
-            acceptAnswer(fieldIndex, result);
-            return;
-          }
-          speak('Please say yes or no.', () => listenForConfirmation(fieldIndex, result, silentTries + 1));
+          // Silence is never consent: leave this answer pending and listen again.
+          speak('Please say yes or no.', () => listenForConfirmation(fieldIndex, result));
           return;
         }
         addChatMessage('user', reply);
@@ -1662,7 +1687,7 @@ function useConversationEngine({
         }
       },
     });
-  }, [listenOnce, speak, acceptAnswer, fixAnswer, skipField, setPhase, setStatusMessage, addChatMessage, practice]);
+  }, [listenOnce, speak, acceptAnswer, fixAnswer, skipField, setPhase, setStatusMessage, setVoiceError, addChatMessage, practice]);
 
   // ── Letter-by-letter spelling (the fallback) ──
   // One turn: the applicant spells, and as soon as they pause the assistant reads the
@@ -1864,7 +1889,7 @@ function useConversationEngine({
       reason: spokenValue ? null : (heardBy.reason || 'no-speech'),
     });
 
-    if (!spokenValue && !asked.optional) {
+    if (!spokenValue) {
       recordHeard();
       if (isBirthStepOf(birthRef.current, fieldIndex)) {   // silence is a miss of the step, like a wrong answer
         handleBirthResult(fieldIndex, { ok: false, reason: 'empty', message: pickRandom(RETRY_PHRASES) });
@@ -2667,13 +2692,13 @@ const ChatBubble = React.memo(({ role, text, isLatest }) => {
 ChatBubble.displayName = 'ChatBubble';
 
 /** Conversational summary row used on the review / voice-review screens. */
-const SummaryRow = React.memo(({ label, value, onChange, onAskAgain, highlighted, error, fieldKey }) => (
+const SummaryRow = React.memo(({ label, value, onChange, onAskAgain, highlighted, error, fieldKey, className = '' }) => (
   <div
     className={`rounded-xl border p-3.5 transition-colors ${
       error
         ? 'border-rose-300 bg-rose-50'
         : highlighted ? 'border-indigo-300 bg-indigo-50' : 'border-gray-100 bg-white hover:border-gray-200'
-    }`}
+    } ${className}`}
   >
     <div className="flex items-center justify-between gap-3">
       <span className="text-sm font-medium text-gray-600">{label}</span>
@@ -3450,11 +3475,11 @@ const NewApplication = () => {
           </div>
         </div>
 
-        <aside className="bg-white border border-gray-200 rounded-xl shadow-sm">
-          <div className="border-b border-gray-100 p-4">
+        <aside className="flex min-h-0 flex-col bg-white border border-gray-200 rounded-xl shadow-sm">
+          <div className="shrink-0 border-b border-gray-100 p-4">
             <h2 className="font-semibold text-gray-900">Applicant Answers</h2>
           </div>
-          <div className="max-h-[calc(100vh-220px)] overflow-auto p-2 space-y-2">
+          <div className="min-h-0 max-h-[calc(100vh-220px)] overflow-auto p-2 space-y-2 xl:max-h-none xl:flex-1 xl:basis-0">
             {INTERVIEW_FIELDS.map((field, index) => (
               <SummaryRow
                 key={field.key}
@@ -3493,12 +3518,15 @@ const NewApplication = () => {
           </div>
         </div>
 
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+        <div className="grid grid-cols-1 items-start md:grid-cols-6 gap-3">
           {INTERVIEW_FIELDS.map((field, index) => (field.key === 'icr_no' && isFilipino(answers) ? null : (
             // The ICR number is only for a citizenship other than Filipino (plan 002.1).
             <SummaryRow
               key={field.key}
               fieldKey={field.key}
+              className={['surname', 'given_name', 'middle_name'].includes(field.key)
+                ? 'md:col-span-2'
+                : field.key === 'address' ? 'md:col-span-6' : 'md:col-span-3'}
               label={field.label}
               value={answers[field.key]}
               onChange={(value, meta) => {
@@ -3750,13 +3778,6 @@ const NewApplication = () => {
               </button>
             </div>
 
-            <p className="mt-2 text-xs text-gray-500 inline-flex items-center gap-1.5">
-              <FaCommentDots className="text-gray-400" size={12} />
-              Press <strong>Start Conversation</strong> and the assistant will ask every question and show each
-              answer on screen to confirm (yes or no, by voice or by tapping), then show the summary before issuing.
-              <span className="hidden sm:inline"> Shortcut: Ctrl+Enter to save.</span>
-            </p>
-
             {voiceError && (
               <div className="mt-3 rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-800 flex items-start gap-2">
                 <FaExclamationTriangle className="shrink-0 mt-0.5" />
@@ -3802,12 +3823,12 @@ const NewApplication = () => {
       </div>
 
       {/* Sidebar */}
-      <aside className="bg-white border border-gray-200 rounded-xl shadow-sm">
-        <div className="border-b border-gray-100 p-4">
+      <aside className="flex min-h-0 flex-col bg-white border border-gray-200 rounded-xl shadow-sm">
+        <div className="shrink-0 border-b border-gray-100 p-4">
           <h2 className="font-semibold text-gray-900">Applicant Answers</h2>
           <p className="mt-1 text-xs text-gray-500">{answeredCount} of {INTERVIEW_FIELDS.length} fields captured</p>
         </div>
-        <div className="max-h-[calc(100vh-220px)] overflow-auto p-2">
+        <div className="min-h-0 max-h-[calc(100vh-220px)] overflow-auto p-2 xl:max-h-none xl:flex-1 xl:basis-0">
           {INTERVIEW_FIELDS.map((field, index) => {
             const value = answers[field.key];
             const isActive = index === currentFieldIndex;

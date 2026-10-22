@@ -31,7 +31,7 @@ const boxes = () => [...container.querySelectorAll('input[role="combobox"]')];
 const choose = async (box, text, label) => {
   act(() => type(box, text));
   await act(async () => { jest.advanceTimersByTime(250); });
-  const option = [...container.querySelectorAll('[role="option"]')].find((o) => o.textContent === label);
+  const option = [...document.querySelectorAll('[role="option"]')].find((o) => o.textContent === label);
   act(() => option.dispatchEvent(new MouseEvent('mousedown', { bubbles: true })));
 };
 

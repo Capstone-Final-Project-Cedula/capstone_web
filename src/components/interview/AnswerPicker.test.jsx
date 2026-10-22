@@ -100,7 +100,7 @@ describe('AnswerPicker saves what the voice path saves (plan 002.1)', () => {
     const input = container.querySelector('input[role="combobox"]');
     act(() => type(input, 'malay'));
     await act(async () => { jest.advanceTimersByTime(250); });
-    const options = [...container.querySelectorAll('[role="option"]')];
+    const options = [...document.querySelectorAll('[role="option"]')];
     expect(options.map((o) => o.textContent)).toEqual([
       'Malaybalay City, Bukidnon', 'Not in the list: use "malay" as typed',
     ]);
@@ -109,7 +109,7 @@ describe('AnswerPicker saves what the voice path saves (plan 002.1)', () => {
 
     act(() => type(input, 'Tokyo'));
     await act(async () => { jest.advanceTimersByTime(250); });
-    const free = [...container.querySelectorAll('[role="option"]')].pop();
+    const free = [...document.querySelectorAll('[role="option"]')].pop();
     act(() => free.dispatchEvent(new MouseEvent('mousedown', { bubbles: true })));
     expect(onChange).toHaveBeenLastCalledWith('Tokyo', { freeText: true });
   });
@@ -122,22 +122,22 @@ describe('AnswerPicker saves what the voice path saves (plan 002.1)', () => {
     const input = container.querySelector('input[role="combobox"]');
     act(() => type(input, 'malay'));
     await act(async () => { jest.advanceTimersByTime(250); });
-    expect(container.textContent).toMatch(/Malaybalay City/);
+    expect(document.querySelector('[role="listbox"]').textContent).toMatch(/Malaybalay City/);
     act(() => type(input, 'Tokyo'));                                   // the new search is still pending
     act(() => input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })));
     expect(onChange).not.toHaveBeenCalledWith('Malaybalay City, Bukidnon', expect.anything());
     expect(onChange).toHaveBeenLastCalledWith('Tokyo', { freeText: true });   // only the typed text is there
   });
 
-  test('names stay free text; occupation suggests but allows any text', () => {
+  test('names and occupation allow free text without suggestions', () => {
     const onChange = jest.fn();
     render({ fieldKey: 'surname', onChange });
     expect(container.querySelector('input[type="text"]')).not.toBeNull();
     render({ fieldKey: 'occupation', onChange });
     const input = container.querySelector('input');
-    const suggestions = document.getElementById(input.getAttribute('list'));
-    expect(suggestions.tagName).toBe('DATALIST');
-    expect(suggestions.querySelector('option[value="Farmer"]')).not.toBeNull();
+    expect(input.type).toBe('text');
+    expect(input.hasAttribute('list')).toBe(false);
+    expect(container.querySelector('datalist, select, [role="combobox"]')).toBeNull();
     act(() => type(input, 'Beekeeper'));
     expect(onChange).toHaveBeenLastCalledWith('Beekeeper', {});
   });

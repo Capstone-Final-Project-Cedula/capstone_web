@@ -1,4 +1,5 @@
-import React, { useEffect, useId, useRef, useState } from 'react';
+import React, { useEffect, useId, useLayoutEffect, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { Search } from 'lucide-react';
 import Input from './Input';
 
@@ -19,6 +20,9 @@ const SearchSelect = ({
   const [active, setActive] = useState(0);
   const [loading, setLoading] = useState(false);
   const [failed, setFailed] = useState(false);
+  const [position, setPosition] = useState(null);
+  const inputRef = useRef(null);
+  const listRef = useRef(null);
   const turn = useRef(0);
   const searchRef = useRef(search);   // callers may pass a new function every render
   searchRef.current = search;
@@ -75,9 +79,51 @@ const SearchSelect = ({
     else if (!options.length) status = 'No match in the list.';
   }
 
+  // Float above clipping cards without moving the form; show four options at a time.
+  useLayoutEffect(() => {
+    if (!open || !inputRef.current || !listRef.current) return undefined;
+    const updatePosition = () => {
+      const input = inputRef.current.getBoundingClientRect();
+      const list = listRef.current;
+      const rows = [...list.querySelectorAll('[role="option"]')].slice(0, 4);
+      const rowHeight = rows.reduce((sum, row) => sum + row.getBoundingClientRect().height, 0);
+      const statusHeight = list.querySelector('[role="presentation"]')?.getBoundingClientRect().height || 0;
+      const desiredHeight = (rowHeight || rows.length * 44) + statusHeight + 10;
+      const viewport = window.visualViewport;
+      const viewportTop = viewport?.offsetTop || 0;
+      const viewportBottom = viewportTop + (viewport?.height || window.innerHeight);
+      const below = Math.max(0, viewportBottom - input.bottom - 12);
+      const above = Math.max(0, input.top - viewportTop - 12);
+      const upwards = below < desiredHeight && above > below;
+      const maxHeight = Math.min(desiredHeight, upwards ? above : below);
+      const width = Math.min(input.width, window.innerWidth - 16);
+      const next = {
+        top: upwards ? input.top - maxHeight - 4 : input.bottom + 4,
+        left: Math.max(8, Math.min(input.left, window.innerWidth - width - 8)),
+        width,
+        maxHeight,
+      };
+      setPosition((previous) => previous && Object.keys(next).every((key) => previous[key] === next[key]) ? previous : next);
+    };
+    updatePosition();
+    window.addEventListener('resize', updatePosition);
+    window.addEventListener('scroll', updatePosition, true);
+    window.visualViewport?.addEventListener('resize', updatePosition);
+    return () => {
+      window.removeEventListener('resize', updatePosition);
+      window.removeEventListener('scroll', updatePosition, true);
+      window.visualViewport?.removeEventListener('resize', updatePosition);
+    };
+  }, [open, options, status, typed, position?.width]);
+
+  useEffect(() => {
+    if (open) listRef.current?.querySelector('[aria-selected="true"]')?.scrollIntoView?.({ block: 'nearest' });
+  }, [active, open, options]);
+
   return (
     <div className="relative min-w-0">
       <Input
+        ref={inputRef}
         label={label}
         icon={Search}
         value={query ?? value}
@@ -99,11 +145,13 @@ const SearchSelect = ({
         onBlur={() => setTimeout(close, 150)}
         onKeyDown={onKeyDown}
       />
-      {open && (status || choices.length > 0) && (
+      {open && (status || choices.length > 0) && createPortal(
         <ul
+          ref={listRef}
           id={listId}
           role="listbox"
-          className="absolute left-0 right-0 z-30 mt-1 max-h-72 overflow-y-auto rounded-[var(--radius-md)] border border-[var(--color-neutral-200)] bg-white py-1 shadow-[var(--shadow-md)]"
+          className="fixed z-[110] overflow-y-auto overscroll-contain rounded-[var(--radius-md)] border border-[var(--color-neutral-200)] bg-white py-1 shadow-[var(--shadow-md)]"
+          style={position || { visibility: 'hidden' }}
         >
           {status && <li className="px-3.5 py-2.5 text-sm text-[var(--color-neutral-500)]" role="presentation">{status}</li>}
           {choices.map((option, i) => (
@@ -123,7 +171,8 @@ const SearchSelect = ({
               <span className="min-w-0">{option.label}</span>
             </li>
           ))}
-        </ul>
+        </ul>,
+        document.body,
       )}
     </div>
   );
