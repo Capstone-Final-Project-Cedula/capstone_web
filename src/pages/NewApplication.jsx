@@ -463,6 +463,18 @@ const interpretAnswer = (key, text, { spoken = false, town = null, province = nu
   onOffline: (error) => console.warn('Answer check unavailable, using the local check:', error),
 });
 
+/**
+ * Plan 002: time per question = end of speaking -> answer on screen (the 10 s measure of the
+ * paper, as in plan 001.6), printed in the console for the laptop timing runs. Field and seconds
+ * only, never what was said. Whisper answers only (the recorder gives the end of speaking).
+ */
+const logAnswerTiming = (fieldKey, heardBy) => {
+  if (!heardBy?.spokeEndedAt) return;
+  const sec = (ms) => (ms / 1000).toFixed(1);
+  console.info(`[timing] ${fieldKey}: end of speaking -> answer on screen ${sec(performance.now() - heardBy.spokeEndedAt)} s `
+    + `(silence wait ${sec(heardBy.cutOffAt - heardBy.spokeEndedAt)} s, Whisper round trip ${heardBy.seconds} s)`);
+};
+
 const validateFieldValue = (key, value) => {
   if (key === 'sex') return validateSex(value) || value;
   if (key === 'civil_status') return validateCivilStatus(value) || value;
@@ -536,18 +548,11 @@ const convertRecordingToWav = async (blob) => {
     const offline = new OfflineAudioContext(1, Math.ceil(decoded.duration * targetRate), targetRate);
     const source = offline.createBufferSource();
     source.buffer = decoded;
-
-    if (decoded.numberOfChannels > 1) {
-      const merger = offline.createChannelMerger(1);
-      const splitter = offline.createChannelSplitter(decoded.numberOfChannels);
-      source.connect(splitter);
-      for (let i = 0; i < decoded.numberOfChannels; i++) {
-        splitter.connect(merger, i, 0);
-      }
-      merger.connect(offline.destination);
-    } else {
-      source.connect(offline.destination);
-    }
+    // The 1-channel destination down-mixes stereo to 0.5 * (L + R) ("speakers" rule:
+    // https://developer.mozilla.org/en-US/docs/Web/API/Web_Audio_API/Basic_concepts_behind_Web_Audio_API#up-mixing_and_down-mixing).
+    // Plan 002: the old splitter -> merger wiring added the channels (L + R), so a stereo mic
+    // came out twice as loud and loud speech clipped at the WAV's [-1, 1] limit.
+    source.connect(offline.destination);
 
     source.start(0);
     const rendered = await offline.startRendering();
@@ -1032,11 +1037,13 @@ function useWhisperListener() {
     let cancelled = false;
     let speechStart = 0;
     let lastVoice = 0;
+    let cutOffAt = 0;
     let noise = 0;
     let noiseSamples = 0;
     const started = performance.now();
 
     const finish = () => {
+      cutOffAt = cutOffAt || performance.now();
       clearInterval(timer);
       try { source.disconnect(); } catch { /* already disconnected */ }
       if (recorder.state !== 'inactive') recorder.stop();
@@ -1085,6 +1092,8 @@ function useWhisperListener() {
         onEnd?.((data.transcript || '').trim(), {
           engine: 'whisper',
           seconds: Math.round((performance.now() - t0) / 100) / 10,
+          spokeEndedAt: lastVoice,   // for the plan 002 timing line (end of speaking -> answer on screen)
+          cutOffAt,
         });
       } catch (error) {
         if (error.response?.status === 401) return;            // login expired: client redirects
@@ -1618,6 +1627,8 @@ function useConversationEngine({
         // reply that is just "go back" / "change my address" moves (plan 001.6).
         if (isYesAnswer(reply)) {
           noteShortcut(result, false);
+          // A yes to "Were you born in <town>?" is the place-of-birth answer itself (a yes to "is that correct?" is not).
+          if (result.birthShortcut) logAnswerTiming('place_of_birth', meta);
           spelledRef.current = '';
           acceptAnswer(fieldIndex, result);
           return;
@@ -1630,7 +1641,9 @@ function useConversationEngine({
           } else {
             // Not yes or no: taken as the answer to the province question ("Malaybalay, Bukidnon").
             birthRef.current = { ...birthRef.current, step: 'province' };
-            handleSpokenAnswer(fieldIndex, reply, { shown: true, engine: meta.engine, seconds: meta.seconds });
+            handleSpokenAnswer(fieldIndex, reply, {
+              shown: true, engine: meta.engine, seconds: meta.seconds, spokeEndedAt: meta.spokeEndedAt, cutOffAt: meta.cutOffAt,
+            });
           }
           return;
         }
@@ -1639,7 +1652,7 @@ function useConversationEngine({
           // Letters instead of yes/no: they are spelling it (or adding to their spelling). A try too.
           if (countAttempt(fieldIndex) >= MAX_ATTEMPTS) { giveUpOnField(fieldIndex); return; }
           spelledRef.current = combineSpelling(spelledRef.current, reply);
-          finishSpelling(fieldIndex);
+          finishSpelling(fieldIndex, { heardBy: meta });
         } else if (isNoAnswer(reply) || /^(no|hindi|mali)\b/i.test(normalizeReply(reply))) {
           spelledRef.current = '';
           fixAnswer(fieldIndex);
@@ -1654,7 +1667,9 @@ function useConversationEngine({
             giveUpOnField(fieldIndex);
             return;
           }
-          handleSpokenAnswer(fieldIndex, reply, { shown: true, engine: meta.engine, seconds: meta.seconds });
+          handleSpokenAnswer(fieldIndex, reply, {
+            shown: true, engine: meta.engine, seconds: meta.seconds, spokeEndedAt: meta.spokeEndedAt, cutOffAt: meta.cutOffAt,
+          });
         }
       },
     });
@@ -1689,7 +1704,7 @@ function useConversationEngine({
         setStatusMessage('Listening for the letters...');
       },
       onError: () => {},
-      onEnd: (heard) => {
+      onEnd: (heard, meta) => {
         if (!conversationActiveRef.current || turn !== confirmTurnRef.current) return;
         const reply = heard.trim();
         if (!reply) {
@@ -1703,14 +1718,14 @@ function useConversationEngine({
         addChatMessage('user', reply);
         spelledRef.current = combineSpelling(spelledRef.current, reply);
         setDraftAnswer(spelledRef.current.toUpperCase());
-        finishSpelling(fieldIndex);
+        finishSpelling(fieldIndex, { heardBy: meta });
       },
     });
   }, [listenOnce, speak, giveUpOnField, setDraftAnswer, setPhase, setStatusMessage, addChatMessage]);
 
   // `typed`: the applicant (or staff) typed the correction on screen, so it is saved
-  // without another "is that correct?".
-  const finishSpelling = useCallback(async (fieldIndex, { typed = '' } = {}) => {
+  // without another "is that correct?". `heardBy`: the recorder's meta of spoken letters (timing line).
+  const finishSpelling = useCallback(async (fieldIndex, { typed = '', heardBy = null } = {}) => {
     const field = INTERVIEW_FIELDS[fieldIndex];
     const letters = (typed || spelledRef.current).trim();
     if (!letters) {
@@ -1732,6 +1747,7 @@ function useConversationEngine({
       return;
     }
     if (!conversationActiveRef.current || turn !== confirmTurnRef.current) return;
+    if (!typed) logAnswerTiming(field.key, heardBy);   // every branch below puts the answer on screen now
     practice.rec.heard(field.key, { text: letters, engine: typed ? 'typed' : 'spelled' });
     practice.rec.parsed(field.key, result);
     // "Sorry" / "What?" while spelling a place is not a place either (only names keep the unclear pass).
@@ -1901,6 +1917,7 @@ function useConversationEngine({
       return; // session expired: the API client sends the user to the login page
     }
     if (!conversationActiveRef.current) return;
+    logAnswerTiming(asked.key, heardBy);   // every branch below puts the answer on screen now
     if (isBirthStepOf(birthRef.current, fieldIndex)) {
       handleBirthResult(fieldIndex, result);
       return;
