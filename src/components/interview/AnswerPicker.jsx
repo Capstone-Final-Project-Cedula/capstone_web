@@ -1,4 +1,4 @@
-import React, { useEffect, useId, useRef, useState } from 'react';
+import React, { useEffect, useId, useState } from 'react';
 import Input from '../ui/Input';
 import Button from '../ui/Button';
 import SearchSelect from '../ui/SearchSelect';
@@ -49,15 +49,15 @@ const AnswerPicker = ({
   const listId = useId();
   const [problem, setProblem] = useState('');
   const isFilipino = !value || /^filipino$/i.test(String(value).trim());
-  const [otherCitizenship, setOtherCitizenship] = useState(!isFilipino);
-
-  const preselected = useRef(false);
+  // "Other" tapped: kept even while its text box is still empty. Otherwise it follows the value, so a
+  // first render that still shows the previous question's answer cannot leave it stuck on "Other".
+  const [choseOther, setChoseOther] = useState(false);
+  const otherCitizenship = choseOther || !isFilipino;
 
   useEffect(() => {
-    // Filipino is preselected, once: choosing "Other" empties the value and must not bring it back.
-    if (kind === 'citizenship' && !value && !preselected.current) onChange('Filipino', {});
-    preselected.current = true;
-  }, [kind, value, onChange]);
+    // Filipino is preselected while nothing is chosen; never after "Other" was tapped.
+    if (kind === 'citizenship' && !value && !choseOther) onChange('Filipino', {});
+  }, [kind, value, choseOther, onChange]);
 
   if (kind === 'sex' || kind === 'civil_status') {
     return (
@@ -92,10 +92,11 @@ const AnswerPicker = ({
 
   if (kind in NUMBER_LIMITS) {
     const limits = NUMBER_LIMITS[kind];
+    const withUnit = `${String(label || '').replace(/\s*\(.*\)$/, '')} (${limits.unit})`;   // "Height (cm)" once
     return (
       <Input
-        label={shown(`${label} (${limits.unit})`)}
-        aria-label={named(`${label} (${limits.unit})`)}
+        label={shown(withUnit)}
+        aria-label={named(withUnit)}
         placeholder={limits.unit}
         type="number"
         inputMode="decimal"
@@ -119,7 +120,7 @@ const AnswerPicker = ({
           hideLabel={hideLabel}
           value={otherCitizenship ? 'Other' : 'Filipino'}
           onChange={(v) => {
-            setOtherCitizenship(v === 'Other');
+            setChoseOther(v === 'Other');
             onChange(v === 'Other' ? '' : 'Filipino', {});
           }}
         />

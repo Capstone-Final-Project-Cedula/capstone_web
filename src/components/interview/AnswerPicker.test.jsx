@@ -82,6 +82,16 @@ describe('AnswerPicker saves what the voice path saves (plan 002.1)', () => {
     expect(container.querySelector('input')).not.toBeNull();
   });
 
+  test('citizenship is not stuck on "Other" when the first render still shows the previous answer', () => {
+    const onChange = jest.fn();
+    render({ fieldKey: 'citizenship', value: 'Single', onChange });     // manual mode, one render behind
+    render({ fieldKey: 'citizenship', value: '', onChange });
+    expect(onChange).toHaveBeenLastCalledWith('Filipino', {});
+    render({ fieldKey: 'citizenship', value: 'Filipino', onChange });
+    expect(button('Filipino').getAttribute('aria-checked')).toBe('true');
+    expect(container.querySelectorAll('input')).toHaveLength(0);         // no "Other" text box
+  });
+
   test('place of birth: pick from the list (with its code) or use the typed text, marked', async () => {
     jest.useFakeTimers();
     placesAPI.birth.mockResolvedValue({ data: [{ code: '1031210000', value: 'Malaybalay City, Bukidnon' }] });

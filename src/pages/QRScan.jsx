@@ -164,7 +164,7 @@ const QRScan = () => {
       className="p-3.5 bg-[var(--color-neutral-50)] rounded-[var(--radius-md)] border border-[var(--color-neutral-100)] min-w-0"
     >
       <div className="mb-1.5 flex flex-wrap items-center justify-between gap-2">
-        <p className="text-xs font-semibold uppercase tracking-wide text-[var(--color-neutral-500)]">{labelOf(key)}</p>
+        <p className="min-w-0 break-words text-xs font-semibold uppercase tracking-wide text-[var(--color-neutral-500)]">{labelOf(key)}</p>
         {missing[key] && (
           <Badge tone="warning" icon={AlertTriangle}>Needed before issuing</Badge>
         )}
@@ -324,7 +324,7 @@ const QRScan = () => {
                     className="p-3.5 bg-[var(--color-neutral-50)] rounded-[var(--radius-md)] border border-[var(--color-neutral-100)] min-w-0"
                   >
                     <div className="mb-1 flex items-center justify-between gap-2">
-                      <p className="min-w-0 text-xs font-semibold uppercase tracking-wide text-[var(--color-neutral-500)]">
+                      <p className="min-w-0 break-words text-xs font-semibold uppercase tracking-wide text-[var(--color-neutral-500)]">
                         {labelOf(key)}
                       </p>
                       {/* Plan 002.1: any field can be corrected before issuing, not only a blank required one. */}
