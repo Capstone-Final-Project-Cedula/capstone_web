@@ -3299,7 +3299,7 @@ const NewApplication = () => {
             <div className="rounded-[var(--radius-lg)] border border-[var(--color-warning)] bg-[var(--color-warning-light)] p-4 text-sm text-[var(--color-neutral-800)] flex items-start gap-2" role="status">
               <FaExclamationTriangle className="shrink-0 mt-0.5 text-[var(--color-warning)]" aria-hidden="true" />
               <div className="min-w-0">
-                <span className="font-semibold">Still needed before saving:</span>{' '}
+                <span className="font-semibold">Still to answer:</span>{' '}
                 <span className="break-words">{missingLabels.join(', ')}</span>
               </div>
             </div>
