@@ -17,9 +17,16 @@ export const isYesAnswer = (value) => {
   return YES_START.test(reply) && !NEGATION.test(reply) && !looksSpelled(value);
 };
 
+// A sound before the no ("Oh no", "Uh, hindi", plan 002.2). "Oh." alone stays a yes (Whisper's "oo").
+const FILLER = '(?:(?:oh|uh|ah|um|uhm|eh|hmm)\\s+)?';
+
 // Includes how Whisper writes "mali" and "hindi po" ("Malay", "Molly", "Hindipa", "In people").
+const NO_START = new RegExp(`^${FILLER}(no|nope|not correct|that is wrong|that's wrong|incorrect|wrong|cancel|stop|don't|do not|nevermind|hindi\\w*|mali|malay|malin|malih|molly|hindi tama|di|in people|in deeper)\\b`);
+
 export const isNoAnswer = (value) => {
   const reply = normalizeReply(value);
-  return /^(no|nope|not correct|that is wrong|that's wrong|incorrect|wrong|cancel|stop|don't|do not|nevermind|hindi\w*|mali|malay|malin|malih|molly|hindi tama|di|in people|in deeper)\b/.test(reply)
-    && reply.split(' ').length <= 4;
+  return NO_START.test(reply) && reply.split(' ').length <= 4;
 };
+
+// A no at the "is that correct?" step, also a longer one ("No, it is Bacus with a C").
+export const isNoReply = (value) => isNoAnswer(value) || new RegExp(`^${FILLER}(no|hindi|mali)\\b`).test(normalizeReply(value));

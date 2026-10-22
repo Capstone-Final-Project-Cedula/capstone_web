@@ -16,16 +16,21 @@ export const createPracticeRecorder = ({ savedForm = (field, value) => value, no
   let questions = {};
   let addressSeconds = 0;
   let addressEngine = 'whisper';
+  // Plan 002.2: 'end_step' once skipped questions are asked again at the end, so the summary can tell a
+  // question right after the ladder from one finished at the end (the note's tries are cumulative).
+  let stage = 'interview';
 
   const entry = (key) => {
-    if (!questions[key]) questions[key] = { askedAt: null, attempts: [], first: undefined };
+    if (!questions[key]) questions[key] = { askedAt: null, attempts: [], first: undefined, carried: 0 };
     return questions[key];
   };
 
-  const build = (key, { value, engine }) => {
+  const build = (key, { value, engine, skipped = false }) => {
     const e = entry(key);
     const last = e.attempts[e.attempts.length - 1];
     const elapsed = e.askedAt === null ? null : seconds1(now() - e.askedAt);
+    // A skipped question's seconds carry over to the note that finishes it at the end step.
+    const spent = elapsed === null && !e.carried ? null : seconds1(((elapsed || 0) + e.carried) * 1000);
     const note = {
       field: key,
       attempts: e.attempts.length,
@@ -33,8 +38,9 @@ export const createPracticeRecorder = ({ savedForm = (field, value) => value, no
       first_value: e.first === undefined ? null : e.first,
       accepted_value: value === undefined || value === null || value === '' ? null : text500(value),
       accepted_engine: engine || last?.engine || 'whisper',
-      seconds: elapsed,
+      seconds: spent,
     };
+    e.carried = skipped ? spent || 0 : 0;
     // A question visited again ("go back to my surname") keeps its first voice value and its tries, so a
     // correction still shows as changed; only reset() (a new applicant) clears them.
     e.askedAt = null;
@@ -61,7 +67,13 @@ export const createPracticeRecorder = ({ savedForm = (field, value) => value, no
         parsed: null,
         ok: null,
         reason: reason || null,
+        stage,
       });
+    },
+
+    /** Plan 002.2: the skipped questions are asked again at the end; every try after this is 'end_step'. */
+    endStep() {
+      stage = 'end_step';
     },
 
     /**
@@ -91,7 +103,13 @@ export const createPracticeRecorder = ({ savedForm = (field, value) => value, no
 
     /** Too many unusable tries: the question is left blank for now. */
     skip(key) {
-      return build(key, { value: null, engine: 'skipped' });
+      return build(key, { value: null, engine: 'skipped', skipped: true });
+    },
+
+    /** An optional question left blank on purpose at the end step ("leave it blank"). */
+    leaveBlank(key) {
+      entry(key).attempts.push({ heard: '', engine: 'typed', seconds: null, parsed: '', ok: true, reason: 'left-blank', stage });
+      return build(key, { value: null, engine: 'typed' });
     },
 
     /** The three address parts are joined: the one `address` summary row (compared with the saved address at issue). */
@@ -112,6 +130,7 @@ export const createPracticeRecorder = ({ savedForm = (field, value) => value, no
     reset() {
       questions = {};
       addressSeconds = 0;
+      stage = 'interview';
     },
   };
 };

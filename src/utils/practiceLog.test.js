@@ -5,6 +5,60 @@ const clock = (start = 1000) => {
   return { now: () => t, advance: (ms) => { t += ms; } };
 };
 
+describe('the voice ladder in the practice log (plan 002.2)', () => {
+  test('a skipped question finished at the end step keeps its interview tries, their stage and its seconds', () => {
+    const c = clock();
+    const rec = createPracticeRecorder({ now: c.now });
+    rec.asked('surname');
+    c.advance(20000);
+    rec.heard('surname', { text: '', engine: 'whisper', reason: 'browser-no-speech' });
+    rec.heard('surname', { text: 'rayes', engine: 'whisper', seconds: 0.8 });
+    rec.parsed('surname', { ok: false, value: '' });
+    const skipped = rec.skip('surname');
+    expect(skipped).toMatchObject({ accepted_engine: 'skipped', attempts: 2, seconds: 20 });
+
+    c.advance(90000);                             // other questions, not timed for this one
+    rec.endStep();
+    rec.asked('surname');
+    c.advance(15000);
+    rec.heard('surname', { text: 'Reyes', engine: 'typed' });
+    rec.parsed('surname', { ok: true, value: 'Reyes' });
+    const finished = rec.accept('surname', 'Reyes', 'typed');
+    expect(finished.attempts).toBe(3);
+    expect(finished.attempt_details.map((a) => a.stage)).toEqual(['interview', 'interview', 'end_step']);
+    expect(finished.attempt_details[0].reason).toBe('browser-no-speech');
+    expect(finished.seconds).toBe(35);            // 20 s in the interview + 15 s at the end
+    expect(finished.accepted_engine).toBe('typed');
+  });
+
+  test('an optional question left blank at the end is marked, not counted as voice', () => {
+    const rec = createPracticeRecorder();
+    rec.asked('height');
+    rec.heard('height', { text: 'tall', engine: 'whisper' });
+    rec.skip('height');
+    rec.endStep();
+    const note = rec.leaveBlank('height');
+    expect(note).toMatchObject({ accepted_value: null, accepted_engine: 'typed', attempts: 2 });
+    expect(note.attempt_details[1]).toMatchObject({ reason: 'left-blank', stage: 'end_step', ok: true });
+  });
+
+  test('a new applicant starts in the interview stage again', () => {
+    const rec = createPracticeRecorder();
+    rec.endStep();
+    rec.reset();
+    rec.heard('sex', { text: 'female', engine: 'whisper' });
+    expect(rec.accept('sex', 'Female').attempt_details[0].stage).toBe('interview');
+  });
+
+  test('a question answered without a skip is timed from its last ask, as before', () => {
+    const c = clock();
+    const rec = createPracticeRecorder({ now: c.now });
+    rec.asked('sex');
+    c.advance(4000);
+    expect(rec.accept('sex', 'Female').seconds).toBe(4);
+  });
+});
+
 describe('practice recorder (plan 001.7)', () => {
   test('a question answered on the second try builds one note with tries, seconds and engine', () => {
     const c = clock();
@@ -24,8 +78,8 @@ describe('practice recorder (plan 001.7)', () => {
       field: 'surname',
       attempts: 2,
       attempt_details: [
-        { heard: 'rayes', engine: 'whisper', seconds: 0.8, parsed: 'Rayes', ok: true, reason: null },
-        { heard: 'reyes', engine: 'whisper', seconds: 0.7, parsed: 'Reyes', ok: true, reason: null },
+        { heard: 'rayes', engine: 'whisper', seconds: 0.8, parsed: 'Rayes', ok: true, reason: null, stage: 'interview' },
+        { heard: 'reyes', engine: 'whisper', seconds: 0.7, parsed: 'Reyes', ok: true, reason: null, stage: 'interview' },
       ],
       first_value: 'Rayes',                   // the FIRST voice-parsed value, not the accepted one
       accepted_value: 'Reyes',
