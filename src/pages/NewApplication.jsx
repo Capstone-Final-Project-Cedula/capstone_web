@@ -14,7 +14,6 @@ import {
   FaUserTie,
   FaExclamationTriangle,
   FaBrain,
-  FaCommentDots,
   FaFileAlt,
   FaTimes,
 } from 'react-icons/fa';
@@ -27,16 +26,24 @@ import { getApiErrorMessage } from '../api/errors';
 import LoadingSpinner from '../components/common/LoadingSpinner';
 import SusSurveyDialog from '../components/sus/SusSurveyDialog';
 import ConsentNotice from '../components/interview/ConsentNotice';
+import AnswerPicker from '../components/interview/AnswerPicker';
 import { combineSpelling, looksSpelled, titleCaseSpelled } from '../utils/spelling';
-import { isNoAnswer, isYesAnswer, normalizeReply } from '../utils/replies';
+import { isFillerOnly, isNoAnswer, isNoReply, isPlainYes, isYesAnswer, normalizeReply } from '../utils/replies';
 import { ADDRESS_PARTS, addressTownOf, joinAddress } from '../utils/address';
 import { checkAnswer } from '../utils/answerCheck';
 import {
-  BIRTH_IDLE, BIRTH_PROVINCE_STEP, birthQuestion, onBirthNo, onBirthPick, onBirthResult, shortcutResult, startBirth,
+  BIRTH_IDLE, BIRTH_LADDER_KEYS, BIRTH_PROVINCE_STEP, birthLadderKey, birthQuestion, onBirthNo, onBirthResult,
+  onProvinceConfirmed, startBirth,
 } from '../utils/birthPlace';
+import { newLadder, noButtonLabel, onMiss, startSpellingLadder, takeDue, withDue } from '../utils/ladder';
 import { COUNTER_LINE, COUNTER_SCREEN_LINE } from '../utils/counterFlow';
 import { validateFormData } from '../utils/requiredFields';
+import {
+  REQUIRED_INTERVIEW_KEYS, endStepIndexes as endStepIndexesIn, isRequiredKey,
+  missingRequiredIndexes as missingRequiredIn, parseMissingChoice,
+} from '../utils/endStep';
 import { createPracticeRecorder, createPracticeSession } from '../utils/practiceLog';
+import { pickedCodes, pickerKind, unchangedPicks } from '../utils/pickers';
 import { Keyboard, Mic } from 'lucide-react';
 import Button from '../components/ui/Button';
 import Badge from '../components/ui/Badge';
@@ -136,9 +143,9 @@ const INTERVIEW_FIELDS = [
   },
 ];
 
-const REQUIRED_KEYS = INTERVIEW_FIELDS
-  .filter((f) => !f.optional)
-  .map((f) => f.key);
+// The 6 fields a CTC cannot be issued without (the backend's 422 rule), as interview keys. Plan 002.2:
+// only these block the final "yes"; any other question can be left blank.
+const REQUIRED_KEYS = REQUIRED_INTERVIEW_KEYS;
 
 const FIELD_MAP = Object.fromEntries(INTERVIEW_FIELDS.map((f) => [f.key, f]));
 
@@ -162,29 +169,27 @@ const REVIEW_PROMPT =
 const CHECKING_LINE = 'Checking your details.';
 const SAVING_LINE = 'Saving your application, please wait.';
 
+// A filler, silence or "Please say yes or no." in a row at one question (plan 006): then listening pauses.
+const NON_ANSWER_LIMIT = 3;
+
 const isBlank = (value) => !String(value ?? '').trim();
 
 // Required questions still blank (e.g. skipped after too many tries), in interview order.
-const missingRequiredIndexes = (answers) =>
-  INTERVIEW_FIELDS
-    .map((field, index) => ({ field, index }))
-    .filter(({ field }) => REQUIRED_KEYS.includes(field.key) && isBlank(answers?.[field.key]))
-    .map(({ index }) => index);
+const missingRequiredIndexes = (answers) => missingRequiredIn(INTERVIEW_FIELDS, answers);
+
+// The end step (plan 002.2, utils/endStep.js): every skipped question still blank, plus any required one.
+const endStepIndexes = (answers, skipped) => endStepIndexesIn(INTERVIEW_FIELDS, answers, skipped);
 
 // "Height (cm)" -> "height", for speech.
 const spokenLabel = (field) => field.label.toLowerCase().replace(/\s*\(.*\)/, '');
 
-// Reply to "Would you like to type it or say it again?". "type" wins when both are heard.
-const parseMissingChoice = (reply) => {
-  const t = String(reply || '').toLowerCase();
-  if (/\b(type|typed|typing|tayp|i-?type|keyboard|write|isulat|sulat)\b/.test(t)) return 'type';
-  if (/\b(say|said|speak|again|repeat|voice|ulit|usab|isulti|sabihin)\b/.test(t)) return 'say';
-  return null;
-};
-
 // Answers that can be spelled letter by letter when they were heard wrong.
 // (Dates, numbers and choices are simply asked again instead.)
 const SPELLABLE_KEYS = new Set(['surname', 'given_name', 'middle_name', 'place_of_birth', 'occupation', 'citizenship']);
+
+// The whole answer, letter by letter, "space" between words (plan 002.2): the spelling parser also takes
+// "dash", so "Dela Cruz-Villanueva" is spelled in one go.
+const spellPrompt = (field) => `Please spell your ${spokenLabel(field)} letter by letter. Say space where there is a space.`;
 
 const isFilipino = (answers) => /^filipino$/i.test(String(answers?.citizenship || '').trim());
 
@@ -202,15 +207,29 @@ const isAddressPartOf = (address, fieldIndex) => INTERVIEW_FIELDS[fieldIndex]?.k
 const questionOf = (address, fieldIndex) => (isAddressPartOf(address, fieldIndex)
   ? ADDRESS_PARTS[address.part]
   : INTERVIEW_FIELDS[fieldIndex]);
-const attemptKeyOf = (address, fieldIndex) => (isAddressPartOf(address, fieldIndex) ? ADDRESS_PARTS[address.part].key : fieldIndex);
-// The place of birth is asked in steps by voice (plan 001.8). `birth` = see utils/birthPlace.js.
+// The place of birth is asked in steps by voice (plan 001.8, 006). `birth` = see utils/birthPlace.js.
 const isBirthStepOf = (birth, fieldIndex) => INTERVIEW_FIELDS[fieldIndex]?.key === 'place_of_birth' && birth.active;
+// The key a question counts its tries on: the field, an address part, or one place-of-birth step (plan 006).
+const attemptKeyOf = (address, fieldIndex, birth = BIRTH_IDLE) => {
+  if (isAddressPartOf(address, fieldIndex)) return ADDRESS_PARTS[address.part].key;
+  return isBirthStepOf(birth, fieldIndex) ? birthLadderKey(birth) : fieldIndex;
+};
 // The question being asked: an address part, a place-of-birth step, or the field itself.
 const askedOf = (address, birth, fieldIndex) => (isBirthStepOf(birth, fieldIndex)
   ? birthQuestion(birth)
   : questionOf(address, fieldIndex));
 // The practice log keeps one row per field: every place-of-birth step is noted as `place_of_birth`.
 const logKeyOf = (asked) => asked.logKey || asked.key;
+// Spelling is for the spellable fields, never an address part.
+const canSpellAt = (address, fieldIndex) => SPELLABLE_KEYS.has(INTERVIEW_FIELDS[fieldIndex].key) && !isAddressPartOf(address, fieldIndex);
+// One try without an accepted answer on the question being asked (plan 002.2): 'again', 'spell' or 'skip'.
+// `ladders`: { [field index or address part key]: ladder }, changed in place.
+const countMissIn = (ladders, address, fieldIndex, birth = BIRTH_IDLE) => {
+  const key = attemptKeyOf(address, fieldIndex, birth);
+  const { ladder, next } = onMiss(ladders[key] || newLadder(), { canSpell: canSpellAt(address, fieldIndex) });
+  ladders[key] = ladder;
+  return next;
+};
 const RETRY_PHRASES = [
   "I didn't quite catch that. Could you say it again?",
   "Sorry, I missed that. One more time, please?",
@@ -604,7 +623,7 @@ const fetchSpeech = (text) => {
 /** Start generating a line in the background; it plays instantly when needed. */
 const prefetchSpeech = (...texts) => texts.forEach((t) => fetchSpeech(t).catch(() => {}));
 
-const synthesizeAndPlay = async (text, { onStart, onEnd, audioRef } = {}) => {
+export const synthesizeAndPlay = async (text, { onStart, onEnd, audioRef, isStale } = {}) => {
   const spoken = String(text || '').trim();
   if (!spoken) {
     onEnd?.();
@@ -622,10 +641,15 @@ const synthesizeAndPlay = async (text, { onStart, onEnd, audioRef } = {}) => {
 
   stopCurrentAudio();
 
+  // `isStale()`: a newer line or a cancel came while this clip was still downloading (plan 006). A stale clip
+  // never plays and never touches the newer line's audio (audioRef, speechSynthesis).
+  const stale = () => Boolean(isStale?.());
+  let audio = null;
   try {
     const blob = await fetchSpeech(spoken);
+    if (stale()) return;
     const url = window.URL.createObjectURL(blob);
-    const audio = new Audio(url);
+    audio = new Audio(url);
     if (audioRef) audioRef.current = audio;
 
     await new Promise((resolve) => {
@@ -644,6 +668,7 @@ const synthesizeAndPlay = async (text, { onStart, onEnd, audioRef } = {}) => {
       });
     });
   } catch (error) {
+    if (stale()) return;   // a failed clip nobody waits for any more: the newer line is not disturbed
     console.warn('Backend voice unavailable, using browser voice instead:', error);
     stopCurrentAudio();
     if (window.speechSynthesis) {
@@ -660,7 +685,8 @@ const synthesizeAndPlay = async (text, { onStart, onEnd, audioRef } = {}) => {
       });
     }
   } finally {
-    if (audioRef) audioRef.current = null;
+    // Only this line's own audio is released; a newer line may already own the ref.
+    if (audioRef && audio && audioRef.current === audio) audioRef.current = null;
     onEnd?.();
   }
 };
@@ -796,7 +822,8 @@ const parseNavigation = (transcript) => {
 
 const parseVoiceCorrections = (transcript) => {
   const spoken = String(transcript || '').trim();
-  if (!spoken || isYesAnswer(spoken) || isNoAnswer(spoken)) return [];
+  // Only a whole-reply yes is skipped: "Yes, my surname is Cruz" is a correction (plan 006).
+  if (!spoken || isPlainYes(spoken) || isNoAnswer(spoken)) return [];
 
   const fieldAliases = FIELD_ALIASES;
 
@@ -841,10 +868,14 @@ const parseVoiceCorrections = (transcript) => {
  * Edge neural TTS voice via synthesizeAndPlay(), falling back to the
  * browser's built-in speechSynthesis only if that call fails.
  */
-function useSpeechSynthesis() {
+export function useSpeechSynthesis() {
   const [isSpeaking, setIsSpeaking] = useState(false);
   const audioRef = useRef(null);
   const speechSequenceRef = useRef(0);
+  // speakInOrder() lines wait for each other; speak() / cancel() drop them (plan 006).
+  const chainRef = useRef(Promise.resolve());
+  const queuedRef = useRef(0);
+  const waitersRef = useRef(new Set());
 
   const cancel = useCallback(() => {
     speechSequenceRef.current += 1;
@@ -854,6 +885,8 @@ function useSpeechSynthesis() {
       audioRef.current.src = '';
       audioRef.current = null;
     }
+    waitersRef.current.forEach((release) => release());   // queued lines waiting for a stopped clip move on (and drop)
+    waitersRef.current.clear();
     setIsSpeaking(false);
   }, []);
 
@@ -864,6 +897,7 @@ function useSpeechSynthesis() {
     setIsSpeaking(true);
     synthesizeAndPlay(text, {
       audioRef,
+      isStale: () => speechSequenceRef.current !== sequence,
       onEnd: () => {
         if (speechSequenceRef.current !== sequence) return;
         setIsSpeaking(false);
@@ -872,9 +906,32 @@ function useSpeechSynthesis() {
     });
   }, [cancel]);
 
+  // The closing lines ("Checking your details." -> "Saving your application" -> the counter line): each plays to
+  // its end before the next starts. The first replaces whatever interview line is playing; a later speak() or
+  // cancel() (a newer interview prompt) drops the lines still waiting.
+  const speakInOrder = useCallback((text, onEnd) => {
+    if (!queuedRef.current) cancel();
+    const epoch = speechSequenceRef.current;
+    queuedRef.current += 1;
+    setIsSpeaking(true);
+    chainRef.current = chainRef.current.then(async () => {
+      try {
+        if (speechSequenceRef.current !== epoch) return;
+        await new Promise((resolve) => {
+          waitersRef.current.add(resolve);
+          synthesizeAndPlay(text, { audioRef, isStale: () => speechSequenceRef.current !== epoch, onEnd: resolve });
+        });
+        if (speechSequenceRef.current === epoch) onEnd?.();
+      } finally {
+        queuedRef.current -= 1;
+        if (!queuedRef.current && speechSequenceRef.current === epoch) setIsSpeaking(false);
+      }
+    });
+  }, [cancel]);
+
   useEffect(() => () => cancel(), [cancel]);
 
-  return { isSpeaking, speak, cancel };
+  return { isSpeaking, speak, speakInOrder, cancel };
 }
 
 /**
@@ -1068,7 +1125,10 @@ function useWhisperListener() {
         if (!speechStart) speechStart = now;
         lastVoice = now;
       }
-      if (speechStart && now - lastVoice > cfg.silenceMs) finish();
+      if (speechStart && now - lastVoice > cfg.silenceMs) {
+        if (lastVoice - speechStart >= cfg.minSpeechMs) finish();
+        else { speechStart = 0; lastVoice = 0; } // A click or brief noise is not a completed answer.
+      }
       else if (!speechStart && elapsed > cfg.noSpeechMs) finish();
       else if (elapsed > cfg.maxMs) finish();
     }, cfg.tickMs);
@@ -1080,7 +1140,8 @@ function useWhisperListener() {
       setIsListening(false);
       if (cancelled) return;
       if (!speechStart || lastVoice - speechStart < cfg.minSpeechMs) {
-        onEnd?.('', { engine: 'whisper', reason: 'no-speech' });
+        // Why it was empty, for the practice log (plan 002.2): nothing crossed the threshold, or too short.
+        onEnd?.('', { engine: 'whisper', reason: speechStart ? 'too-short' : 'browser-no-speech' });
         return;
       }
       onTranscribing?.();
@@ -1097,8 +1158,9 @@ function useWhisperListener() {
         });
       } catch (error) {
         if (error.response?.status === 401) return;            // login expired: client redirects
-        if (error.response?.status === 422) {                   // Whisper heard no speech
-          onEnd?.('', { engine: 'whisper', reason: 'no-speech' });
+        if (error.response?.status === 422) {
+          // Whisper heard nothing, or the backend dropped it: whisper-empty / dropped-echo / dropped-repetition.
+          onEnd?.('', { engine: 'whisper', reason: error.response.headers?.['x-empty-reason'] || 'whisper-empty' });
           return;
         }
         onError?.('whisper-failed');
@@ -1137,8 +1199,9 @@ function useConversationEngine({
   setMissingView,
   setAddressPart,
   practice,   // temporary practice log (plan 001.7): { session, rec }
+  notePick,   // plan 002.1: (key, value, meta) a value picked from a list, for its code at issue
 }) {
-  const { isSpeaking, speak: rawSpeak, cancel: cancelSpeech } = useSpeechSynthesis();
+  const { isSpeaking, speak: rawSpeak, speakInOrder: rawSpeakInOrder, cancel: cancelSpeech } = useSpeechSynthesis();
   const browser = useBrowserSpeechRecognition();
   const whisper = useWhisperListener();
   const [isConversationActive, setIsConversationActive] = useState(false);
@@ -1148,7 +1211,9 @@ function useConversationEngine({
   // is only a backup if the Whisper server fails twice in a row.
   const engineRef = useRef('whisper');
   const whisperFailuresRef = useRef(0);
+  const answerTurnRef = useRef(0);
   const stopBrowserListening = useCallback(() => {
+    answerTurnRef.current += 1;
     whisper.stopListening();
     browser.stopListening();
   }, [whisper, browser]);
@@ -1156,7 +1221,15 @@ function useConversationEngine({
   // One listening turn with the active engine. onEnd(text, meta) — meta.engine says who heard it.
   const listenOnce = useCallback((opts) => {
     if (engineRef.current === 'browser') {
-      browser.listenOnce({ ...opts, onEnd: (text) => opts.onEnd?.(text, { engine: 'browser' }) });
+      let failure = null;
+      browser.listenOnce({
+        ...opts,
+        onError: (error) => {
+          if (error !== 'no-speech') failure = error;
+          opts.onError?.(error);
+        },
+        onEnd: (text) => opts.onEnd?.(text, { engine: 'browser', ...(failure ? { error: failure } : {}) }),
+      });
       return;
     }
     whisper.listenOnce({
@@ -1200,6 +1273,12 @@ function useConversationEngine({
     setPhase(PHASE.SPEAKING);
     rawSpeak(text, onEnd);
   }, [rawSpeak, setPhase]);
+
+  // The closing lines wait for each other instead of cutting each other off (plan 006).
+  const speakNext = useCallback((text, onEnd) => {
+    setPhase(PHASE.SPEAKING);
+    rawSpeakInOrder(text, onEnd);
+  }, [rawSpeakInOrder, setPhase]);
 
   const stopConversation = useCallback(() => {
     setIsConversationActive(false);
@@ -1280,24 +1359,43 @@ function useConversationEngine({
   // `active` while those questions run; each confirmed answer is kept in `results` and they are joined
   // into the one address answer after the last one.
   const addressRef = useRef({ active: false, part: 0, results: {} });
-  // The place of birth in steps (plan 001.8): the "Were you born in <town>?" shortcut, the province,
-  // then a town of it. `homeTownRef`: the town of the address answers ("Baungon, Bukidnon").
+  // The place of birth in two read-back steps (plan 006): the province (or a city), then a town of it.
   const birthRef = useRef(BIRTH_IDLE);
-  const homeTownRef = useRef('');
 
-  // How many times each question was answered with something unusable, said "no" to, or answered
-  // again at the "is that correct?" step (plan 001.8: every try counts). At the limit the answer is
-  // typed instead of asked again; the place of birth shows its closest places to tap.
-  const attemptsRef = useRef({});
-  const MAX_ATTEMPTS = 2;
-  const countAttempt = (fieldIndex) => {
-    const key = attemptKeyOf(addressRef.current, fieldIndex);
-    attemptsRef.current[key] = (attemptsRef.current[key] || 0) + 1;
-    return attemptsRef.current[key];
+  // The voice ladder per question (plan 002.2, utils/ladder.js): 3 spoken tries, then 2 spelled tries
+  // (spellable fields), then the question is skipped and asked again at the end. Nothing opens a text
+  // box mid-interview. Keyed by the field index, the address part being asked, or the place-of-birth step.
+  const ladderRef = useRef({});
+  const resetLadder = (key) => {
+    delete ladderRef.current[key];
+    if (INTERVIEW_FIELDS[key]?.key === 'place_of_birth') BIRTH_LADDER_KEYS.forEach((k) => { delete ladderRef.current[k]; });
+  };
+  const ladderOf = (fieldIndex) => ladderRef.current[attemptKeyOf(addressRef.current, fieldIndex, birthRef.current)] || newLadder();
+  // The applicant spelled on their own at "is that correct?": the spelled tries count from now on.
+  const enterSpelling = (fieldIndex) => {
+    const key = attemptKeyOf(addressRef.current, fieldIndex, birthRef.current);
+    ladderRef.current[key] = startSpellingLadder(ladderRef.current[key] || newLadder());
+  };
+  // The questions skipped during the interview, asked again at the end (plan 002.2).
+  const skippedRef = useRef(new Set());
+  // "2 of 3 still needed": the most questions the end step listed since it began.
+  const endStepTotalRef = useRef(0);
+  const endStepCount = () => {
+    const left = endStepIndexes(answersRef.current, skippedRef.current).length;
+    endStepTotalRef.current = Math.max(endStepTotalRef.current, left);
+    return { left, total: endStepTotalRef.current };
   };
 
   // The on-screen confirmation panel (see confirmAnswer).
   const confirmTurnRef = useRef(0);        // a tap ends the voice turn in progress
+  // Non-answers in a row at one question ("Um.", silence at a yes/no step, "Please say yes or no.", plan 006): they
+  // are not tries, so after NON_ANSWER_LIMIT the automatic listening pauses instead of asking for ever.
+  const nonAnswerRef = useRef({ key: null, count: 0 });
+  const noteNonAnswer = (key) => {
+    nonAnswerRef.current = { key, count: nonAnswerRef.current.key === key ? nonAnswerRef.current.count + 1 : 1 };
+    return nonAnswerRef.current.count;
+  };
+  const resetNonAnswers = () => { nonAnswerRef.current = { key: null, count: 0 }; };
   const pendingConfirmRef = useRef(null);  // { fieldIndex, result } while the panel is up
 
   // The missing-answers step before the final "yes" (plan 001.3).
@@ -1315,10 +1413,10 @@ function useConversationEngine({
     if (field.key === 'address' && !addressRef.current.active) {
       // Starting the address (again): from the town question.
       addressRef.current = { active: true, part: 0, results: {} };
-      ADDRESS_PARTS.forEach((p) => { attemptsRef.current[p.key] = 0; });
+      ADDRESS_PARTS.forEach((p) => resetLadder(p.key));
     }
     if (field.key === 'place_of_birth' && !birthRef.current.active) {
-      birthRef.current = startBirth(homeTownRef.current);   // the shortcut first when the address gave a town
+      birthRef.current = startBirth();   // always the province (or city) question first
     }
     const asked = askedOf(addressRef.current, birthRef.current, fieldIndex);
     practice.rec.asked(logKeyOf(asked));   // practice log: the clock starts at the first ask only
@@ -1329,11 +1427,6 @@ function useConversationEngine({
     setAddressPart(inSteps ? asked : null);
     setDraftAnswer(inSteps ? '' : answersRef.current[field.key] || '');
     setAwaitingConfirmation(false);
-    if (isBirthStepOf(birthRef.current, fieldIndex) && birthRef.current.step === 'shortcut') {
-      // "Were you born in Baungon, Bukidnon?": a yes is the answer, a no asks the province.
-      latestRef.current.confirmAnswer(fieldIndex, shortcutResult(birthRef.current.home));
-      return;
-    }
     setPhase(PHASE.ASKING);
     setStatusMessage(`Asking about your ${asked.label.toLowerCase()}`);
     addChatMessage('assistant', asked.question);
@@ -1343,6 +1436,7 @@ function useConversationEngine({
   // Whisper -> (handleSpokenAnswer) DistilBERT + Regex -> voice read-back.
   const listenForAnswer = useCallback((fieldIndex) => {
     if (!conversationActiveRef.current) return;
+    const turn = ++answerTurnRef.current;
     const asked = askedOf(addressRef.current, birthRef.current, fieldIndex);
     listenOnce({
       fieldKey: asked.key,   // Whisper gets a hint for this question (e.g. the barangays of the town said)
@@ -1354,7 +1448,18 @@ function useConversationEngine({
         setStatusMessage('Listening for your answer...');
       },
       onEnd: (heard, meta = {}) => {
-        if (!conversationActiveRef.current) return;
+        if (!conversationActiveRef.current || turn !== answerTurnRef.current || fieldIndex !== currentFieldIndexRef.current
+          || asked.key !== askedOf(addressRef.current, birthRef.current, fieldIndex).key) return;
+        const completedTurn = ++answerTurnRef.current;
+        if (!heard.trim() && !meta.error && (meta.engine === 'browser'
+          || meta.reason === 'browser-no-speech' || meta.reason === 'too-short')) {
+          // Keep recording in bounded turns while the applicant thinks. Silence is not an answer or a failed try.
+          window.setTimeout(() => {
+            if (conversationActiveRef.current && completedTurn === answerTurnRef.current && fieldIndex === currentFieldIndexRef.current
+              && asked.key === askedOf(addressRef.current, birthRef.current, fieldIndex).key) listenForAnswer(fieldIndex);
+          }, 150);
+          return;
+        }
         if (meta.error === 'mic-blocked') {
           setVoiceError('The microphone is blocked. Allow microphone access in the browser, or type the answers.');
           setIsConversationActive(false);
@@ -1368,11 +1473,7 @@ function useConversationEngine({
             latestRef.current.handleBirthResult(fieldIndex, { ok: false, reason: meta.error, message: 'Sorry, I had trouble hearing that. Please say it again.' });
             return;
           }
-          if (countAttempt(fieldIndex) >= MAX_ATTEMPTS) {
-            giveUpOnField(fieldIndex);
-            return;
-          }
-          speak("Sorry, I had trouble hearing that. Please say it again.", () => listenForAnswer(fieldIndex));
+          latestRef.current.missAndContinue(fieldIndex, () => speak("Sorry, I had trouble hearing that. Please say it again.", () => listenForAnswer(fieldIndex)));
           return;
         }
         if (heard) setDraftAnswer(heard);
@@ -1384,12 +1485,23 @@ function useConversationEngine({
   // Save a confirmed answer and go to the next question.
   const acceptAnswer = useCallback((fieldIndex, result) => {
     const field = INTERVIEW_FIELDS[fieldIndex];
+    resetNonAnswers();
+    if (result.birthProvince && isBirthStepOf(birthRef.current, fieldIndex)) {
+      // The province was read back and confirmed (plan 006): now its town. Step 1's tries are over.
+      delete ladderRef.current.place_of_birth_province;
+      birthRef.current = onProvinceConfirmed(birthRef.current, result.birthProvince);
+      spelledRef.current = '';
+      clearConfirmView();
+      addChatMessage('assistant', `Province: ${result.value}`);
+      askQuestion(fieldIndex);
+      return;
+    }
     if (isAddressPartOf(addressRef.current, fieldIndex)) {
       // One part of the address confirmed: ask the next part, or join the three into the address.
       const address = addressRef.current;
       const part = ADDRESS_PARTS[address.part];
       practice.session.note(practice.rec.accept(part.key, result.value));
-      attemptsRef.current[part.key] = 0;
+      resetLadder(part.key);
       address.results[part.key] = result;
       clearConfirmView();
       addChatMessage('assistant', `${part.label}: ${result.display || result.value || 'none'}`);
@@ -1402,7 +1514,6 @@ function useConversationEngine({
         return;
       }
       const joined = joinAddress(address.results);
-      homeTownRef.current = address.results.address_town?.value || '';   // for "Were you born in ...?"
       addressRef.current = { active: false, part: 0, results: {} };
       setAddressPart(null);
       result = { ...result, value: joined, display: joined };
@@ -1411,7 +1522,8 @@ function useConversationEngine({
       ? practice.rec.joined(result.value)
       : practice.rec.accept(field.key, result.value, result.picked ? 'typed' : undefined));   // a tapped place: on screen
     if (field.key === 'place_of_birth') birthRef.current = BIRTH_IDLE;
-    attemptsRef.current[fieldIndex] = 0;
+    resetLadder(fieldIndex);
+    skippedRef.current.delete(fieldIndex);
     missingRetryRef.current.delete(fieldIndex);
     clearConfirmView();
     saveSpokenAnswer(fieldIndex, result.value || '');
@@ -1420,13 +1532,15 @@ function useConversationEngine({
     moveToNextQuestion();
   }, [saveSpokenAnswer, moveToNextQuestion, askQuestion, clearConfirmView, setStatusMessage, setAddressPart, addChatMessage, practice]);
 
-  // Leave the field blank for now ("Skip for now", or the address after too many tries). Before the
-  // final "yes" the applicant is asked for it again (type it or say it again). If speaking
-  // fails again on that second round, the text box opens on its own.
+  // The ladder is used up (plan 002.2): leave the field blank for now. Before the final "yes" every
+  // skipped question is asked for again (say it or type it). If speaking fails again on that second
+  // round, the text box opens on its own (plan 001.3), so nothing loops.
   const skipField = useCallback((fieldIndex) => {
     const field = INTERVIEW_FIELDS[fieldIndex];
     practice.session.note(practice.rec.skip(logKeyOf(askedOf(addressRef.current, birthRef.current, fieldIndex))));   // before the address resets
-    attemptsRef.current[fieldIndex] = 0;
+    resetLadder(fieldIndex);
+    skippedRef.current.add(fieldIndex);
+    spelledRef.current = '';
     if (field.key === 'address') {
       addressRef.current = { active: false, part: 0, results: {} };   // asked again from the town question
       setAddressPart(null);
@@ -1444,62 +1558,6 @@ function useConversationEngine({
     speak(msg, moveToNextQuestion);
   }, [speak, moveToNextQuestion, clearConfirmView, setAddressPart, addChatMessage, practice]);
 
-  // Too many tries (plan 001.8): the answer is typed instead of asked again, so no question loops.
-  // The place of birth shows its closest places to tap. The address (asked in 3 parts) and a question
-  // asked again from the missing-answers step keep their way out (skip, then the text box).
-  const giveUpOnField = useCallback((fieldIndex) => {
-    const field = INTERVIEW_FIELDS[fieldIndex];
-    if (field.key === 'place_of_birth') {
-      latestRef.current.showBirthChoices(fieldIndex);
-      return;
-    }
-    if (field.key === 'address' || missingRetryRef.current.has(fieldIndex)) {
-      skipField(fieldIndex);
-      return;
-    }
-    attemptsRef.current[fieldIndex] = 0;
-    confirmTurnRef.current += 1;
-    pendingConfirmRef.current = { fieldIndex, result: null };
-    setConfirmView({ mode: 'typing', label: field.label, value: '', letters: '', canSpell: true, hint: field.hint });
-    setPhase(PHASE.CONFIRMING);
-    setStatusMessage(`Type your ${spokenLabel(field)} in the box, or skip it for now.`);
-    const msg = `Let's type your ${spokenLabel(field)} instead. Please type it in the box on the screen.`;
-    addChatMessage('assistant', msg);
-    speak(msg);   // no listening: the applicant is typing
-  }, [speak, skipField, setConfirmView, setPhase, setStatusMessage, addChatMessage]);
-
-  // The place of birth after 2 misses (plan 001.8): its closest list entries to tap, or type it.
-  // `typed`: a typed place that is not in the list, offered "as typed" next to the list entries.
-  const showBirthChoices = useCallback(async (fieldIndex, suggestions = [], { typed = '', message = '' } = {}) => {
-    confirmTurnRef.current += 1;
-    const turn = confirmTurnRef.current;
-    pendingConfirmRef.current = { fieldIndex, result: null };
-    const birth = birthRef.current;
-    let choices = suggestions.length ? suggestions : birth.suggestions || [];
-    if (!choices.length && !message) {
-      // Nothing usable heard: the likeliest places (the home province and its region, or the province's towns).
-      const inProvince = birth.step === 'town' && birth.province;
-      let fallback = null;
-      try {
-        fallback = await interpretAnswer(inProvince ? 'place_of_birth_town' : 'place_of_birth_province', '', {
-          spoken: true, province: inProvince ? birth.province.code : null,
-        });
-      } catch {
-        return;   // session expired: the API client sends the user to the login page
-      }
-      if (!conversationActiveRef.current || turn !== confirmTurnRef.current) return;
-      choices = fallback?.suggestions || [];
-    }
-    choices = choices.slice(0, 3);
-    setConfirmView({ mode: 'choose', label: 'Place of birth', value: '', letters: '', canSpell: true, choices, typed });
-    let prompt = message || 'Please type your place of birth on the screen.';
-    if (!message && typed) prompt = `${typed} is not in the list of places. Please tap the right place, or use it as typed.`;
-    else if (!message && choices.length) prompt = 'Please tap your place of birth on the screen, or type it.';
-    setPhase(PHASE.CONFIRMING);
-    setStatusMessage('Tap your place of birth, or type it.');
-    addChatMessage('assistant', prompt);
-    speak(prompt);   // no listening: the applicant taps or types
-  }, [speak, setConfirmView, setPhase, setStatusMessage, addChatMessage]);
 
   // "Go back", "go back to my address", "change my surname": ask that question again,
   // then continue where the interview was. Returns true when the reply was such a request.
@@ -1525,7 +1583,7 @@ function useConversationEngine({
     } else {
       resumeIndexRef.current = null;          // jumping ahead: just continue from there
     }
-    attemptsRef.current[target] = 0;
+    resetLadder(target);
     spelledRef.current = '';
     askQuestion(target);
     return true;
@@ -1546,11 +1604,14 @@ function useConversationEngine({
     const birthSteps = isBirthStepOf(birthRef.current, fieldIndex);
     setConfirmView({
       mode: 'confirm',
+      key: field.key,
       label: askedOf(addressRef.current, birthRef.current, fieldIndex).label,
       value: shown,
       // Letter tiles only where spelling matters (names), not for dates, numbers or a place from the list.
       letters: SPELLABLE_KEYS.has(field.key) && !birthSteps ? String(result.value || '') : '',
-      canSpell: SPELLABLE_KEYS.has(field.key) && !birthSteps,
+      canSpell: SPELLABLE_KEYS.has(field.key),   // also a place-of-birth step (plan 006): spelled, matched to its list
+      // What a no does next on the ladder (plan 002.2): say it again, spell it, or skip it for now.
+      noLabel: noButtonLabel(ladderOf(fieldIndex), { canSpell: canSpellAt(addressRef.current, fieldIndex) }),
       note: result.warnings?.[0] || '',
     });
     const prompt = result.needs_confirmation && result.message
@@ -1563,138 +1624,140 @@ function useConversationEngine({
     speak(prompt, () => listenForConfirmation(fieldIndex, result));
   }, [speak, setDraftAnswer, setPhase, setStatusMessage, addChatMessage, setConfirmView]);
 
-  // The answer was wrong: spell it (names, places) or ask again (dates, numbers, choices).
+  // The answer was wrong ("no" at "is that correct?"): one try of the ladder (plan 002.2). Names are
+  // asked again like every other field; spelling starts only when the spoken tries are used up.
   const fixAnswer = useCallback((fieldIndex) => {
-    const field = INTERVIEW_FIELDS[fieldIndex];
-    if (isBirthStepOf(birthRef.current, fieldIndex)) {
-      // "No" to the shortcut asks the province; to a place, the same step again, then the places to tap.
-      const { birth, action } = onBirthNo(birthRef.current);
-      birthRef.current = birth;
-      if (action === 'choose') showBirthChoices(fieldIndex);
-      else askQuestion(fieldIndex);
-      return;
-    }
-    if (countAttempt(fieldIndex) >= MAX_ATTEMPTS) {
-      giveUpOnField(fieldIndex);
-      return;
-    }
-    if (SPELLABLE_KEYS.has(field.key)) {
-      startSpelling(fieldIndex);
-      return;
-    }
-    clearConfirmView();
-    const msg = `Okay. Please say your ${askedOf(addressRef.current, birthRef.current, fieldIndex).label.toLowerCase().replace(/\s*\(.*\)/, '')} again.`;
-    addChatMessage('assistant', msg);
-    speak(msg, () => listenForAnswer(fieldIndex));
-  }, [speak, giveUpOnField, showBirthChoices, askQuestion, clearConfirmView, addChatMessage]);
+    // A "no" at a place-of-birth read-back forgets a pending town (the step's question stays).
+    const birthStep = isBirthStepOf(birthRef.current, fieldIndex);
+    if (birthStep) birthRef.current = onBirthNo(birthRef.current).birth;
+    latestRef.current.missAndContinue(fieldIndex, () => {
+      clearConfirmView();
+      // The question as the step is now (a forgotten pending town asks the province again).
+      const asked = askedOf(addressRef.current, birthRef.current, fieldIndex);
+      if (birthStep) setAddressPart(asked);   // the screen shows the step's own question again
+      const msg = `Okay. Please say your ${asked.label.toLowerCase().replace(/\s*\(.*\)/, '')} again.`;
+      addChatMessage('assistant', msg);
+      speak(msg, () => listenForAnswer(fieldIndex));
+    });
+  }, [speak, clearConfirmView, setAddressPart, addChatMessage]);
 
-  const listenForConfirmation = useCallback((fieldIndex, result, silentTries = 0) => {
+  const listenForConfirmation = useCallback((fieldIndex, result) => {
     const turn = confirmTurnRef.current;
     listenOnce({
       fieldKey: 'confirm',             // Whisper hint: yes / no / opo / hindi (fast "tiny" model)
-      vad: { noSpeechMs: 5000, silenceMs: 600 },   // yes/no is short: end the turn sooner
+      vad: { noSpeechMs: VAD.noSpeechMs, silenceMs: 600 },   // allow time to reply; stop shortly after speech
       onStart: () => {
         setPhase(PHASE.LISTENING);
         setStatusMessage('Listening for yes or no...');
       },
-      onError: () => {},
+      onError: (error) => {
+        if (error === 'no-speech' || !conversationActiveRef.current || turn !== confirmTurnRef.current) return;
+        // Keep the answer pending, and ignore this failed listener's later onEnd.
+        confirmTurnRef.current += 1;
+        setPhase(PHASE.CONFIRMING);
+        setVoiceError('I could not hear your confirmation. Please tap Yes or No below.');
+      },
       onEnd: (heard, meta = {}) => {
         if (!conversationActiveRef.current || turn !== confirmTurnRef.current) return;
         const reply = heard.trim();
-        // The shortcut ("Were you born in Baungon, Bukidnon?") is the place-of-birth answer itself: a try.
-        const noteShortcut = (parsed, partial) => {
-          if (!result.birthShortcut) return;
-          practice.rec.heard('place_of_birth', { text: reply, engine: meta.engine || engineRef.current, seconds: meta.seconds });
-          practice.rec.parsed('place_of_birth', parsed, { partial });
-        };
-        if (!reply) {
-          if (result.birthShortcut) {
-            noteShortcut({ ok: false, value: '' }, true);
-            fixAnswer(fieldIndex);   // no reply to the shortcut: ask the province
+        if (!reply || isFillerOnly(reply)) {
+          // Silence or "Um." is never consent and not a try (plan 006): say it again, up to 3 in a row; then the
+          // automatic listening pauses and the Yes / No buttons stay on the screen.
+          if (noteNonAnswer(`confirm-${fieldIndex}`) >= NON_ANSWER_LIMIT) {
+            confirmTurnRef.current += 1;
+            setPhase(PHASE.CONFIRMING);
+            setVoiceError('I did not hear a yes or no. Please tap Yes or No below.');
             return;
           }
-          if (silentTries >= 1) {
-            // Still no reply: keep the answer; it stays on screen and is checked again at the review.
-            spelledRef.current = '';
-            acceptAnswer(fieldIndex, result);
-            return;
-          }
-          speak('Please say yes or no.', () => listenForConfirmation(fieldIndex, result, silentTries + 1));
+          speak('Please say yes or no.', () => listenForConfirmation(fieldIndex, result));
           return;
         }
+        resetNonAnswers();
         addChatMessage('user', reply);
         // A clear yes wins over navigation words heard in the same reply ("Yes. Go back."); only a
         // reply that is just "go back" / "change my address" moves (plan 001.6).
         if (isYesAnswer(reply)) {
-          noteShortcut(result, false);
-          // A yes to "Were you born in <town>?" is the place-of-birth answer itself (a yes to "is that correct?" is not).
-          if (result.birthShortcut) logAnswerTiming('place_of_birth', meta);
           spelledRef.current = '';
           acceptAnswer(fieldIndex, result);
           return;
         }
         if (handleNavigation(reply, fieldIndex)) return;
-        if (result.birthShortcut) {
-          if (isNoAnswer(reply) || /^(no|hindi|mali)\b/i.test(normalizeReply(reply))) {
-            noteShortcut({ ok: false, value: '' }, true);
-            fixAnswer(fieldIndex);
-          } else {
-            // Not yes or no: taken as the answer to the province question ("Malaybalay, Bukidnon").
-            birthRef.current = { ...birthRef.current, step: 'province' };
-            handleSpokenAnswer(fieldIndex, reply, {
-              shown: true, engine: meta.engine, seconds: meta.seconds, spokeEndedAt: meta.spokeEndedAt, cutOffAt: meta.cutOffAt,
-            });
-          }
-          return;
-        }
-        const spellable = SPELLABLE_KEYS.has(INTERVIEW_FIELDS[fieldIndex].key) && !isBirthStepOf(birthRef.current, fieldIndex);
+        const spellable = SPELLABLE_KEYS.has(INTERVIEW_FIELDS[fieldIndex].key);
         if (spellable && looksSpelled(reply)) {
-          // Letters instead of yes/no: they are spelling it (or adding to their spelling). A try too.
-          if (countAttempt(fieldIndex) >= MAX_ATTEMPTS) { giveUpOnField(fieldIndex); return; }
+          // Letters instead of yes/no: they are spelling it (or adding to their spelling). From now on the
+          // spelled tries count. Already spelling: the read-back was wrong, so this is one spelled try
+          // (Codex verify, plan 002.2: otherwise new spellings could go on without a limit).
+          // `counted`: this turn's step, so a rejected spelling is not counted a second time.
+          const key = attemptKeyOf(addressRef.current, fieldIndex, birthRef.current);
+          const due = takeDue(ladderRef.current, key);
+          let counted = null;
+          if (due || !ladderOf(fieldIndex).spelling) {
+            enterSpelling(fieldIndex);       // the first spelling: a try only if it fails
+          } else {
+            counted = countMissIn(ladderRef.current, addressRef.current, fieldIndex, birthRef.current);
+            if (counted === 'skip') {
+              spelledRef.current = '';
+              skipField(fieldIndex);
+              return;
+            }
+          }
           spelledRef.current = combineSpelling(spelledRef.current, reply);
-          finishSpelling(fieldIndex, { heardBy: meta });
-        } else if (isNoAnswer(reply) || /^(no|hindi|mali)\b/i.test(normalizeReply(reply))) {
+          finishSpelling(fieldIndex, { heardBy: meta, counted });
+        } else if (isNoReply(reply)) {
           spelledRef.current = '';
           fixAnswer(fieldIndex);
-        } else {
-          // They simply said the right answer. A try like any other (plan 001.8): at the limit it is typed.
+        } else if (ladderOf(fieldIndex).spelling) {
+          // Words, not letters, at a spelled read-back: a failed spelling (one try), then spell again.
           spelledRef.current = '';
-          if (isBirthStepOf(birthRef.current, fieldIndex)) {
-            const { birth, action } = onBirthNo(birthRef.current);
-            birthRef.current = birth;
-            if (action === 'choose') { showBirthChoices(fieldIndex); return; }
-          } else if (countAttempt(fieldIndex) >= MAX_ATTEMPTS) {
-            giveUpOnField(fieldIndex);
+          latestRef.current.missAndContinue(fieldIndex, () => {});
+        } else {
+          // A new answer instead of yes or no: one try (plan 002.2), counted here only. It is still checked
+          // (it may be right, even on the last try); only if it fails too does the ladder's next step
+          // (`counted`: again / spell / skip) happen, without counting the same turn a second time.
+          spelledRef.current = '';
+          const key = attemptKeyOf(addressRef.current, fieldIndex, birthRef.current);
+          const due = takeDue(ladderRef.current, key);
+          if (due) {
+            // The last spoken try was already this read-back's answer: its step happens now (no more re-answers).
+            latestRef.current.missAndContinue(fieldIndex, () => {}, { counted: due });
             return;
           }
+          if (isBirthStepOf(birthRef.current, fieldIndex)) birthRef.current = onBirthNo(birthRef.current).birth;
+          const next = countMissIn(ladderRef.current, addressRef.current, fieldIndex, birthRef.current);
+          // The last spoken try: still read back once (it may be right); anything but yes then spells or skips.
+          if (next !== 'again') ladderRef.current[key] = withDue(ladderRef.current[key], next);
           handleSpokenAnswer(fieldIndex, reply, {
-            shown: true, engine: meta.engine, seconds: meta.seconds, spokeEndedAt: meta.spokeEndedAt, cutOffAt: meta.cutOffAt,
+            shown: true, counted: next, engine: meta.engine, seconds: meta.seconds, spokeEndedAt: meta.spokeEndedAt, cutOffAt: meta.cutOffAt,
           });
         }
       },
     });
-  }, [listenOnce, speak, acceptAnswer, fixAnswer, giveUpOnField, showBirthChoices, setPhase, setStatusMessage, addChatMessage, practice]);
+  }, [listenOnce, speak, acceptAnswer, fixAnswer, skipField, setPhase, setStatusMessage, setVoiceError, addChatMessage, practice]);
 
   // ── Letter-by-letter spelling (the fallback) ──
   // One turn: the applicant spells, and as soon as they pause the assistant reads the
   // letters back for a yes. Exactly what was spelled is kept.
   const spelledRef = useRef('');
 
-  const startSpelling = useCallback((fieldIndex) => {
+  // `intro`: said first ("Bakus is not in the list of places. Let's spell it again.").
+  const startSpelling = useCallback((fieldIndex, intro = '') => {
     const field = INTERVIEW_FIELDS[fieldIndex];
+    // A place of birth is spelled at the step being asked (province or town) and matched against that step's list.
     spelledRef.current = '';
     confirmTurnRef.current += 1;
     pendingConfirmRef.current = { fieldIndex, result: null };
-    setConfirmView({ mode: 'spelling', label: field.label, value: '', letters: '', canSpell: true });
-    const prompt = `Please spell your ${field.label.toLowerCase().replace(/\s*\(.*\)/, '')}.`;
+    setConfirmView({ mode: 'spelling', key: field.key, label: field.label, value: '', letters: '', canSpell: true });
+    const prompt = spellPrompt(field);
     setPhase(PHASE.ASKING);
-    setStatusMessage('Spell it letter by letter, or type it.');
+    setStatusMessage('Spell it letter by letter. Say "space" between words.');
     setDraftAnswer('');
+    if (intro) addChatMessage('assistant', intro);
     addChatMessage('assistant', prompt);
-    speak(prompt, () => listenForLetters(fieldIndex));
+    if (intro) speak(intro, () => speak(prompt, () => listenForLetters(fieldIndex)));
+    else speak(prompt, () => listenForLetters(fieldIndex));
   }, [speak, setDraftAnswer, setPhase, setStatusMessage, addChatMessage, setConfirmView]);
 
-  const listenForLetters = useCallback((fieldIndex, silentTries = 0) => {
+  const listenForLetters = useCallback((fieldIndex) => {
     const turn = confirmTurnRef.current;
     listenOnce({
       fieldKey: 'spelling',            // Whisper hint: letters spelled one by one
@@ -1707,29 +1770,52 @@ function useConversationEngine({
       onEnd: (heard, meta) => {
         if (!conversationActiveRef.current || turn !== confirmTurnRef.current) return;
         const reply = heard.trim();
+        const key = INTERVIEW_FIELDS[fieldIndex].key;
+        // Each turn below is one spelled try (plan 002.2), noted with why it gave no letters.
+        const noted = (reason) => practice.rec.heard(key, { text: reply, engine: meta?.engine || 'whisper', seconds: meta?.seconds, reason });
         if (!reply) {
-          if (silentTries >= 1) {
-            giveUpOnField(fieldIndex);
-            return;
-          }
-          speak('Please spell it letter by letter, for example: C, R, U, Z.', () => listenForLetters(fieldIndex, silentTries + 1));
+          noted(meta?.reason || meta?.error || 'no-speech');
+          latestRef.current.missAndContinue(fieldIndex, () => {}, { intro: 'I did not hear any letters.' });
           return;
         }
+        if (isFillerOnly(reply)) {
+          // "Um." while spelling is not a spelled try (plan 006): ask for the letters again; after 3 in a row pause.
+          noted('filler');
+          if (noteNonAnswer(`spell-${fieldIndex}`) >= NON_ANSWER_LIMIT) {
+            stopConversation();
+            setVoiceError('I did not hear any letters. Press Start Conversation to continue, or type it.');
+            return;
+          }
+          speak('I did not hear any letters. Please spell it letter by letter.', () => listenForLetters(fieldIndex));
+          return;
+        }
+        resetNonAnswers();
         addChatMessage('user', reply);
+        if (isNoReply(reply) && !looksSpelled(reply)) {
+          // "Oh no" while spelling is a refusal, not the letters O, N, O (Codex verify, plan 002.2).
+          noted('refused');
+          latestRef.current.missAndContinue(fieldIndex, () => {}, { intro: "Okay. Let's spell it once more." });
+          return;
+        }
         spelledRef.current = combineSpelling(spelledRef.current, reply);
+        if (!spelledRef.current.trim()) {
+          noted('no-letters');   // "done", "space": nothing to read back
+          latestRef.current.missAndContinue(fieldIndex, () => {}, { intro: 'I did not hear any letters.' });
+          return;
+        }
         setDraftAnswer(spelledRef.current.toUpperCase());
         finishSpelling(fieldIndex, { heardBy: meta });
       },
     });
-  }, [listenOnce, speak, giveUpOnField, setDraftAnswer, setPhase, setStatusMessage, addChatMessage]);
+  }, [listenOnce, speak, stopConversation, setVoiceError, setDraftAnswer, setPhase, setStatusMessage, addChatMessage, practice]);
 
   // `typed`: the applicant (or staff) typed the correction on screen, so it is saved
   // without another "is that correct?". `heardBy`: the recorder's meta of spoken letters (timing line).
-  const finishSpelling = useCallback(async (fieldIndex, { typed = '', heardBy = null } = {}) => {
+  const finishSpelling = useCallback(async (fieldIndex, { typed = '', heardBy = null, counted = null } = {}) => {
     const field = INTERVIEW_FIELDS[fieldIndex];
     const letters = (typed || spelledRef.current).trim();
     if (!letters) {
-      startSpelling(fieldIndex);
+      if (!typed) latestRef.current.missAndContinue(fieldIndex, () => {}, { counted, intro: 'I did not hear any letters.' });
       return;
     }
     // Typed text keeps its own capitals ("McArthur") unless it was all one case.
@@ -1740,15 +1826,29 @@ function useConversationEngine({
     // kept exactly as spelled, never "corrected" by the system.
     let result;
     const turn = confirmTurnRef.current;   // a tap (pick, skip, another typed answer) while checking wins
+    // Spelled by voice at a place-of-birth step: matched against that step's list (the province, or the town of it).
+    const birthSpelled = isBirthStepOf(birthRef.current, fieldIndex) && !typed;
+    const asked = askedOf(addressRef.current, birthRef.current, fieldIndex);
     try {
       // Spelled by voice, a place of birth is checked like a spoken one: only a list place, never offline.
-      result = await interpretAnswer(field.key, spelledValue, { spoken: field.key === 'place_of_birth' && !typed });
+      result = await interpretAnswer(birthSpelled ? asked.key : field.key, spelledValue, {
+        spoken: field.key === 'place_of_birth' && !typed,
+        province: birthSpelled && asked.key === 'place_of_birth_town' ? birthRef.current.province?.code : null,
+      });
     } catch {
       return;
     }
     if (!conversationActiveRef.current || turn !== confirmTurnRef.current) return;
     if (!typed) logAnswerTiming(field.key, heardBy);   // every branch below puts the answer on screen now
     practice.rec.heard(field.key, { text: letters, engine: typed ? 'typed' : 'spelled' });
+    if (birthSpelled) {
+      // The step's own read-back (province, town, or a whole place); a miss is a spelled try of that step.
+      latestRef.current.handleBirthResult(fieldIndex, result.reason === 'unclear' ? { ...result, ok: false, reason: 'invalid' } : result, {
+        counted,
+        intro: `${result.message || 'That is not in the list of places.'} Let's spell it again.`,
+      });
+      return;
+    }
     practice.rec.parsed(field.key, result);
     // "Sorry" / "What?" while spelling a place is not a place either (only names keep the unclear pass).
     if (!result.ok && (result.reason !== 'unclear' || field.key === 'place_of_birth')) {
@@ -1758,33 +1858,32 @@ function useConversationEngine({
         speak(result.message);
         return;
       }
-      if (field.key === 'place_of_birth') {
-        // Not a list place (or the check is down): the closest places to tap, or type it.
-        showBirthChoices(fieldIndex, result.suggestions || [], result.reason === 'offline' ? { message: result.message } : {});
-        return;
-      }
-      if (countAttempt(fieldIndex) >= MAX_ATTEMPTS) { giveUpOnField(fieldIndex); return; }   // every try counts
-      const msg = `${result.message} Let's spell it again.`;
-      addChatMessage('assistant', msg);
-      speak(msg, () => startSpelling(fieldIndex));
+      // A failed spelling is one spelled try (plan 002.2), then spell again or skip.
+      latestRef.current.missAndContinue(fieldIndex, () => {}, { counted, intro: `${result.message} Let's spell it again.` });
+      return;
+    }
+    const checked = !result.methods?.includes('local');   // the backend's list, not the offline check
+    if (field.key === 'place_of_birth' && !typed && (!checked || result.warnings?.length)) {
+      // Spelled by voice, a place of birth must be a list place (001.8 rule): anything else is a failed try.
+      latestRef.current.missAndContinue(fieldIndex, () => {}, {
+        counted,
+        intro: `${spelledValue} is not in the list of places. Let's spell it again.`,
+      });
       return;
     }
     // Names keep exactly what was spelled or typed. A date, number or choice takes its checked form
     // ("may 10 1990" -> "May 10, 1990"); a place of birth found in the list is written the list's way.
     let value = spelledValue;
     let display = value;
-    const checked = !result.methods?.includes('local');   // the backend's list, not the offline check
     if (!SPELLABLE_KEYS.has(field.key)) {
       value = result.value ?? spelledValue;
       display = result.display || value;
     } else if (field.key === 'place_of_birth' && result.ok && checked && !result.warnings?.length) {
       value = result.value || spelledValue;
       display = value;
-    } else if (field.key === 'place_of_birth' && typed && result.suggestions?.length) {
-      // Typed, not in the list: the closest list entries to tap, or keep it as typed (clearly marked).
-      showBirthChoices(fieldIndex, result.suggestions, { typed: spelledValue });
-      return;
     } else if (field.key === 'place_of_birth' && typed) {
+      // Typed on purpose with "Type it instead", not in the list: kept as typed, clearly marked (plan 002.2:
+      // no list to tap; 002.1 brings a searchable list).
       display = `${value} (typed${checked ? ', not in the list' : ', not checked'})`;
     }
     const kept = { ...result, ok: true, value, display, needs_confirmation: false };
@@ -1794,7 +1893,7 @@ function useConversationEngine({
       return;
     }
     confirmAnswer(fieldIndex, kept);
-  }, [speak, confirmAnswer, acceptAnswer, giveUpOnField, showBirthChoices, setConfirmView, addChatMessage, practice]);
+  }, [speak, confirmAnswer, acceptAnswer, setConfirmView, addChatMessage, practice]);
 
   // The Yes / No buttons and the type-it box on the confirmation panel. A tap ends the
   // voice turn in progress (speech and listening), then continues like a spoken reply.
@@ -1812,68 +1911,43 @@ function useConversationEngine({
       spelledRef.current = '';
       fixAnswer(fieldIndex);
     } else if (choice === 'typed' && typedValue.trim()) {
+      // Staff (or the applicant) pressed "Type it instead" and typed it (plan 002.2: never opened by itself).
       spelledRef.current = '';
       finishSpelling(fieldIndex, { typed: typedValue.trim() });
-    } else if (choice === 'pick') {
-      // A place of birth tapped on the choices screen (always a list entry).
-      const pick = onBirthPick(birthRef.current, typedValue);
-      birthRef.current = pick.birth;
-      if (pick.action === 'town') askQuestion(fieldIndex);
-      else if (pick.action === 'accept') {
-        practice.rec.heard('place_of_birth', { text: pick.result.value, engine: 'typed' });
-        practice.rec.parsed('place_of_birth', pick.result);
-        acceptAnswer(fieldIndex, pick.result);
-      }
-    } else if (choice === 'keep' && typedValue.trim()) {
-      // A typed place that is not in the list, kept as typed on purpose.
-      const value = typedValue.trim();
-      addChatMessage('user', value);
-      acceptAnswer(fieldIndex, {
-        ok: true, value, display: `${value} (typed, not in the list)`, warnings: ['Typed place of birth, not in the list.'],
-      });
-    } else if (choice === 'spell') {
-      spelledRef.current = '';
-      startSpelling(fieldIndex);
-    } else if (choice === 'skip') {
-      spelledRef.current = '';
-      skipField(fieldIndex);
     }
-  }, [cancelSpeech, stopBrowserListening, acceptAnswer, fixAnswer, finishSpelling, askQuestion, startSpelling, skipField, addChatMessage, practice]);
+  }, [cancelSpeech, stopBrowserListening, acceptAnswer, fixAnswer, finishSpelling]);
 
-  // One place-of-birth step answered (plan 001.8): a province asks its town, a whole place is read back,
-  // a miss is asked again once with an example, the second miss shows the closest places to tap.
-  const handleBirthResult = useCallback((fieldIndex, result) => {
-    if (result.reason === 'offline') {
-      // The answer check is down: a spoken place is never taken by the local check; it is typed.
-      practice.rec.parsed('place_of_birth', result, { partial: true });
-      showBirthChoices(fieldIndex, [], { message: result.message });
-      return;
-    }
+  // One place-of-birth step answered (plan 001.8): a province asks its town, a whole place is read back.
+  // A miss on any step is one try of the question's one ladder (plan 002.2): 3 spoken, then spell the
+  // whole place, then skip. `counted`: the ladder's step already decided at "is that correct?".
+  const handleBirthResult = useCallback((fieldIndex, result, { counted = null, intro = '' } = {}) => {
     if (result.reason === 'unclear') {   // "What?" / "Pakiulit": the question again, not a miss
       practice.rec.parsed('place_of_birth', result, { partial: true });
       speak(result.message, () => askQuestion(fieldIndex));
       return;
     }
-    const { birth, action } = onBirthResult(birthRef.current, result);
-    birthRef.current = { ...birth, suggestions: result.suggestions?.length ? result.suggestions : birth.suggestions };
+    const { birth, action, result: shown = result } = onBirthResult(birthRef.current, result);
+    birthRef.current = birth;
     practice.rec.parsed('place_of_birth', result, { partial: action !== 'confirm' });
-    if (action === 'town') {
-      addChatMessage('assistant', `Province: ${result.value}`);
-      askQuestion(fieldIndex);
-    } else if (action === 'confirm') {
-      confirmAnswer(fieldIndex, result);
-    } else if (action === 'choose') {
-      showBirthChoices(fieldIndex, result.suggestions || []);
-    } else {
-      setPhase(PHASE.RETRY);
-      setStatusMessage(result.message);
+    if (action === 'province' || action === 'confirm') {
+      // Each match is read back before the next step (plan 006): "Bukidnon. Is that correct?" asks the town after a yes.
+      confirmAnswer(fieldIndex, shown);
+    } else if (action === 'ask') {
+      // The same town in several provinces: "Which province is San Jose in?" This is not a try.
       addChatMessage('assistant', result.message);
-      speak(result.message, () => listenForAnswer(fieldIndex));
+      askQuestion(fieldIndex);
+    } else {
+      // Not a place, or the answer check is down ('offline': a spoken place is never taken by the local check).
+      latestRef.current.missAndContinue(fieldIndex, () => {
+        setPhase(PHASE.RETRY);
+        setStatusMessage(result.message);
+        addChatMessage('assistant', result.message);
+        speak(result.message, () => listenForAnswer(fieldIndex));
+      }, { counted, intro });
     }
-  }, [speak, askQuestion, confirmAnswer, showBirthChoices, listenForAnswer, setPhase, setStatusMessage, addChatMessage, practice]);
+  }, [speak, askQuestion, confirmAnswer, listenForAnswer, setPhase, setStatusMessage, addChatMessage, practice]);
 
   const handleSpokenAnswer = useCallback(async (fieldIndex, transcript, heardBy = {}) => {
-    const field = INTERVIEW_FIELDS[fieldIndex];
     const asked = askedOf(addressRef.current, birthRef.current, fieldIndex);   // the field, or the address part being asked
     const spokenValue = transcript.trim();
     // Practice log: one try = what was heard, by which engine, and the Whisper seconds.
@@ -1884,25 +1958,38 @@ function useConversationEngine({
       reason: spokenValue ? null : (heardBy.reason || 'no-speech'),
     });
 
-    if (!spokenValue && !asked.optional) {
+    if (!spokenValue) {
       recordHeard();
       if (isBirthStepOf(birthRef.current, fieldIndex)) {   // silence is a miss of the step, like a wrong answer
         handleBirthResult(fieldIndex, { ok: false, reason: 'empty', message: pickRandom(RETRY_PHRASES) });
         return;
       }
-      if (countAttempt(fieldIndex) >= MAX_ATTEMPTS) {
-        giveUpOnField(fieldIndex);
-        return;
-      }
-      setPhase(PHASE.RETRY);
-      setStatusMessage("I didn't hear an answer. Asking again...");
-      speak(pickRandom(RETRY_PHRASES), () => askQuestion(fieldIndex));
+      latestRef.current.missAndContinue(fieldIndex, () => {
+        setPhase(PHASE.RETRY);
+        setStatusMessage("I didn't hear an answer. Asking again...");
+        speak(pickRandom(RETRY_PHRASES), () => askQuestion(fieldIndex));
+      });
       return;
     }
 
     if (spokenValue && !heardBy.shown) addChatMessage('user', spokenValue);
     if (spokenValue && handleNavigation(spokenValue, fieldIndex)) return;   // "go back to my surname"
     recordHeard();
+    if (isFillerOnly(spokenValue)) {
+      // "Um." is not an answer and not a try (plan 006): ask again; after 3 in a row the listening pauses.
+      if (noteNonAnswer(`ask-${attemptKeyOf(addressRef.current, fieldIndex, birthRef.current)}`) >= NON_ANSWER_LIMIT) {
+        stopConversation();
+        setVoiceError('I did not hear an answer. Press Start Conversation to continue, or type the answer.');
+        return;
+      }
+      const msg = `I didn't hear an answer. Please tell me your ${spokenLabel(asked)}.`;
+      setPhase(PHASE.RETRY);
+      setStatusMessage(msg);
+      addChatMessage('assistant', msg);
+      speak(msg, () => listenForAnswer(fieldIndex));
+      return;
+    }
+    resetNonAnswers();
     setPhase(PHASE.THINKING);
     setStatusMessage('Understanding your answer...');
 
@@ -1918,29 +2005,31 @@ function useConversationEngine({
     }
     if (!conversationActiveRef.current) return;
     logAnswerTiming(asked.key, heardBy);   // every branch below puts the answer on screen now
+    // A new answer at "is that correct?" was counted there: its failure is not a second try (plan 002.2).
+    const counted = heardBy.counted || null;
     if (isBirthStepOf(birthRef.current, fieldIndex)) {
-      handleBirthResult(fieldIndex, result);
+      handleBirthResult(fieldIndex, result, { counted });
       return;
     }
     practice.rec.parsed(asked.key, result);
 
-    if (!result.ok && result.reason === 'not_a_name' && SPELLABLE_KEYS.has(field.key)) {
-      // "It's." / "Or these." is not a name: the name was not heard, so spell it.
-      if (countAttempt(fieldIndex) >= MAX_ATTEMPTS) { giveUpOnField(fieldIndex); return; }
-      startSpelling(fieldIndex);
-      return;
-    }
-    if (!result.ok) {
-      if (result.reason !== 'unclear' && countAttempt(fieldIndex) >= MAX_ATTEMPTS) {
-        giveUpOnField(fieldIndex);
-        return;
-      }
+    if (!result.ok && result.reason === 'unclear') {
+      // "What?" / "Pakiulit": the whole question again, not a try.
       setPhase(PHASE.RETRY);
       setStatusMessage(result.message);
       addChatMessage('assistant', result.message);
-      // "What?" / "Pakiulit" -> repeat the whole question; otherwise say what is needed and listen again.
-      if (result.reason === 'unclear') speak(result.message, () => askQuestion(fieldIndex));
-      else speak(result.message, () => listenForAnswer(fieldIndex));
+      speak(result.message, () => askQuestion(fieldIndex));
+      return;
+    }
+    if (!result.ok) {
+      // Not usable (also "It's." for a name, plan 002.2: names get their 3 spoken tries before spelling).
+      latestRef.current.missAndContinue(fieldIndex, () => {
+        const msg = result.message || pickRandom(RETRY_PHRASES);
+        setPhase(PHASE.RETRY);
+        setStatusMessage(msg);
+        addChatMessage('assistant', msg);
+        speak(msg, () => listenForAnswer(fieldIndex));
+      }, { counted });
       return;
     }
 
@@ -1950,7 +2039,7 @@ function useConversationEngine({
       return;
     }
     confirmAnswer(fieldIndex, result);
-  }, [speak, askQuestion, acceptAnswer, confirmAnswer, giveUpOnField, handleBirthResult, setStatusMessage, setPhase, addChatMessage, practice]);
+  }, [speak, askQuestion, acceptAnswer, confirmAnswer, handleBirthResult, stopConversation, setVoiceError, setStatusMessage, setPhase, addChatMessage, practice]);
 
   // Get the microphone and switch the conversation on. Returns false when voice cannot run.
   const activateVoice = useCallback(async () => {
@@ -1988,13 +2077,15 @@ function useConversationEngine({
     // spelling prompts, so "Female. Is that correct?" plays at once instead of after ~1 s.
     const knownReadBacks = ['Male', 'Female', 'Single', 'Married', 'Widowed', 'Separated', 'Filipino']
       .map((v) => `${v}. Is that correct?`);
-    const spellPrompts = INTERVIEW_FIELDS.filter((f) => SPELLABLE_KEYS.has(f.key))
-      .map((f) => `Please spell your ${f.label.toLowerCase().replace(/\s*\(.*\)/, '')}.`);
+    const spellPrompts = INTERVIEW_FIELDS.filter((f) => SPELLABLE_KEYS.has(f.key)).map(spellPrompt);
     window.setTimeout(() => prefetchSpeech(...INTERVIEW_FIELDS.map((f) => f.question), ...ADDRESS_PARTS.map((p) => p.question),
       BIRTH_PROVINCE_STEP.question, REVIEW_PROMPT), 300);
     window.setTimeout(() => prefetchSpeech(...knownReadBacks, ...spellPrompts, 'Please say yes or no.'), 2500);
 
     if (!alreadyAnswered && startIndex === 0) {
+      ladderRef.current = {};             // a new applicant: fresh tries, nothing skipped yet
+      skippedRef.current = new Set();
+      endStepTotalRef.current = 0;
       setPhase(PHASE.GREETING);
       setStatusMessage('Greeting applicant...');
       addChatMessage('assistant', greeting);
@@ -2010,24 +2101,30 @@ function useConversationEngine({
     }
   }, [activateVoice, speak, askQuestion, setStatusMessage, setPhase, addChatMessage]);
 
-  // ── Missing answers, before the final "yes" (plan 001.3) ──
-  // Each required question still blank is offered again, in interview order:
-  // "I still need your address. Would you like to type it or say it again?"
+  // ── The end step, before the final "yes" (plan 001.3, widened by plan 002.2) ──
+  // Every skipped question (required or not) and any required one still blank, in interview order:
+  // "I still need your height. Would you like to say it or type it?" A question outside the 6 required
+  // ones can also be left blank.
   const askMissingField = useCallback((fieldIndex) => {
     const field = INTERVIEW_FIELDS[fieldIndex];
+    const optional = !isRequiredKey(field.key);
+    practice.rec.endStep();   // practice log (plan 002.2): tries from here on are "finished at the end step"
     missingTurnRef.current += 1;
     pendingMissingRef.current = fieldIndex;
     clearConfirmView();
     setStep('voice-review');
     setAwaitingConfirmation(false);
     setCurrentFieldIndex(fieldIndex);
-    setMissingView({ key: field.key, label: field.label, hint: field.hint, mode: 'choice', allowSay: true, error: '', checking: false });
+    setMissingView({
+      key: field.key, label: field.label, hint: field.hint, mode: 'choice', allowSay: true, optional, ...endStepCount(),
+      error: '', checking: false,
+    });
     setPhase(PHASE.CONFIRMING);
-    setStatusMessage(`Still needed: ${field.label}. Type it or say it again.`);
-    const prompt = `I still need your ${spokenLabel(field)}. Would you like to type it or say it again?`;
+    setStatusMessage(`Still needed: ${field.label}. Say it or type it.`);
+    const prompt = `I still need your ${spokenLabel(field)}. Would you like to say it or type it?${optional ? ' You can also leave it blank.' : ''}`;
     addChatMessage('assistant', prompt);
     speak(prompt, () => latestRef.current.listenForMissingChoice(fieldIndex));
-  }, [speak, clearConfirmView, setStep, setAwaitingConfirmation, setCurrentFieldIndex, setMissingView, setPhase, setStatusMessage, addChatMessage]);
+  }, [speak, clearConfirmView, setStep, setAwaitingConfirmation, setCurrentFieldIndex, setMissingView, setPhase, setStatusMessage, addChatMessage, practice]);
 
   // The text box for one field. `auto`: speaking failed again, so it opened on its own
   // and "Say it again" is no longer offered (no endless loop).
@@ -2041,7 +2138,10 @@ function useConversationEngine({
     setStep('voice-review');
     setAwaitingConfirmation(false);
     setCurrentFieldIndex(fieldIndex);
-    setMissingView({ key: field.key, label: field.label, hint: field.hint, mode: 'typing', allowSay: !auto, error: '', checking: false });
+    setMissingView({
+      key: field.key, label: field.label, hint: field.hint, mode: 'typing', allowSay: !auto, optional: !isRequiredKey(field.key),
+      ...endStepCount(), error: '', checking: false,
+    });
     setPhase(PHASE.CONFIRMING);
     setStatusMessage(`Type your ${spokenLabel(field)} in the box.`);
     const msg = auto
@@ -2057,7 +2157,7 @@ function useConversationEngine({
     pendingMissingRef.current = null;
     setMissingView(null);
     missingRetryRef.current.add(fieldIndex);
-    attemptsRef.current[fieldIndex] = 0;
+    resetLadder(fieldIndex);   // the full ladder once more (plan 002.2)
     spelledRef.current = '';
     resumeIndexRef.current = INTERVIEW_FIELDS.length;   // after this answer, go straight to the review
     setStep('interview');
@@ -2072,7 +2172,7 @@ function useConversationEngine({
       vad: { noSpeechMs: 6000, silenceMs: 700 },
       onStart: () => {
         setPhase(PHASE.LISTENING);
-        setStatusMessage('Listening: say "type" or "say it again"...');
+        setStatusMessage('Listening: say "say it" or "type it"...');
       },
       onError: () => {},
       onEnd: (heard) => {
@@ -2080,11 +2180,15 @@ function useConversationEngine({
         const reply = heard.trim();
         if (reply) addChatMessage('user', reply);
         const choice = parseMissingChoice(reply);
+        const optional = !isRequiredKey(INTERVIEW_FIELDS[fieldIndex].key);
         if (choice === 'type') openMissingTyping(fieldIndex);
         else if (choice === 'say') sayMissingAgain(fieldIndex);
+        else if (choice === 'blank' && optional) latestRef.current.leaveMissingBlank(fieldIndex);
         else if (tries >= 1) openMissingTyping(fieldIndex, { auto: true });   // speech is not getting through
         else {
-          const msg = 'Please say type, or say it again. You can also tap a button on the screen.';
+          const msg = choice === 'blank'
+            ? `Your ${spokenLabel(INTERVIEW_FIELDS[fieldIndex])} is needed for the Cedula. Please say it, or type it.`
+            : `Please say "say it", or "type it".${optional ? ' Or say leave it blank.' : ''} You can also tap a button on the screen.`;
           addChatMessage('assistant', msg);
           speak(msg, () => listenForMissingChoice(fieldIndex, tries + 1));
         }
@@ -2092,8 +2196,23 @@ function useConversationEngine({
     });
   }, [listenOnce, speak, openMissingTyping, sayMissingAgain, setPhase, setStatusMessage, addChatMessage]);
 
+  // "Leave it blank" (plan 002.2): only for a question outside the 6 required ones. It is not asked again.
+  const leaveMissingBlank = useCallback((fieldIndex) => {
+    const field = INTERVIEW_FIELDS[fieldIndex];
+    if (isRequiredKey(field.key)) return;
+    practice.session.note(practice.rec.leaveBlank(field.key));
+    skippedRef.current.delete(fieldIndex);
+    missingRetryRef.current.delete(fieldIndex);
+    resetLadder(fieldIndex);
+    missingTurnRef.current += 1;
+    pendingMissingRef.current = null;
+    setMissingView(null);
+    addChatMessage('assistant', `${field.label}: left blank`);
+    latestRef.current.startVoiceReview();
+  }, [setMissingView, addChatMessage, practice]);
+
   // A typed answer is checked by the same /api/extraction rules as a spoken one.
-  const submitMissingTyped = useCallback(async (fieldIndex, text) => {
+  const submitMissingTyped = useCallback(async (fieldIndex, text, meta = {}) => {
     const field = INTERVIEW_FIELDS[fieldIndex];
     const typed = String(text || '').trim();
     if (!typed) return;
@@ -2101,7 +2220,8 @@ function useConversationEngine({
     setMissingView((view) => (view ? { ...view, checking: true, error: '' } : view));
     let result;
     try {
-      result = await interpretAnswer(field.key, typed);
+      // Picked from the list (plan 002.1): kept as picked, not parsed again (it can rewrite an address).
+      result = meta.code || meta.townCode ? { ok: true, value: typed, display: typed } : await interpretAnswer(field.key, typed);
     } catch {
       return;   // session expired: the API client sends the user to the login page
     }
@@ -2122,20 +2242,22 @@ function useConversationEngine({
     practice.rec.heard(field.key, { text: typed, engine: 'typed' });
     practice.rec.parsed(field.key, result);
     practice.session.note(practice.rec.accept(field.key, value, 'typed'));
+    notePick(field.key, typed, meta);   // its list code goes to /forms/issue only while the answer is still this
     saveSpokenAnswer(fieldIndex, value);
-    attemptsRef.current[fieldIndex] = 0;
+    resetLadder(fieldIndex);
+    skippedRef.current.delete(fieldIndex);
     missingRetryRef.current.delete(fieldIndex);
     pendingMissingRef.current = null;
     setMissingView(null);
     latestRef.current.startVoiceReview();
-  }, [speak, saveSpokenAnswer, setMissingView, addChatMessage, practice]);
+  }, [speak, saveSpokenAnswer, setMissingView, addChatMessage, practice, notePick]);
 
   // The Type it / Say it again buttons and the text box. A tap ends the voice turn in progress.
-  const tapMissing = useCallback((choice, typedValue = '') => {
+  const tapMissing = useCallback((choice, typedValue = '', meta = {}) => {
     const fieldIndex = pendingMissingRef.current;
     if (fieldIndex === null || !conversationActiveRef.current) return;
     if (choice === 'typed') {
-      submitMissingTyped(fieldIndex, typedValue);
+      submitMissingTyped(fieldIndex, typedValue, meta);
       return;
     }
     missingTurnRef.current += 1;
@@ -2143,7 +2265,8 @@ function useConversationEngine({
     stopBrowserListening();
     if (choice === 'type') openMissingTyping(fieldIndex);
     else if (choice === 'say') sayMissingAgain(fieldIndex);
-  }, [cancelSpeech, stopBrowserListening, openMissingTyping, sayMissingAgain, submitMissingTyped]);
+    else if (choice === 'blank') leaveMissingBlank(fieldIndex);
+  }, [cancelSpeech, stopBrowserListening, openMissingTyping, sayMissingAgain, submitMissingTyped, leaveMissingBlank]);
 
   // The details are shown on screen instead of being read aloud (the old read-back of
   // all 14 fields took about 53 seconds). Missing answers are asked for first; "say yes"
@@ -2152,11 +2275,12 @@ function useConversationEngine({
     // The "Voice Review" button on the manual review page: switch the microphone on first,
     // or nothing would be listening for the "yes".
     if (!conversationActiveRef.current && !(await activateVoice())) return;
-    const missing = missingRequiredIndexes(answersRef.current);
+    const missing = endStepIndexes(answersRef.current, skippedRef.current);
     if (missing.length) {
       askMissingField(missing[0]);
       return;
     }
+    endStepTotalRef.current = 0;
     missingTurnRef.current += 1;
     pendingMissingRef.current = null;
     setMissingView(null);
@@ -2165,6 +2289,7 @@ function useConversationEngine({
     setCurrentFieldIndex(0);
     setPhase(PHASE.CONFIRMING);
     setStatusMessage('Please check the details on the screen.');
+    resetNonAnswers();
     addChatMessage('assistant', REVIEW_PROMPT);
     speak(REVIEW_PROMPT, () => listenForReviewCorrections());
   }, [activateVoice, askMissingField, speak, setMissingView, setStep, setAwaitingConfirmation, setCurrentFieldIndex, setStatusMessage, setPhase, addChatMessage]);
@@ -2172,7 +2297,7 @@ function useConversationEngine({
   // "Yes": check first ("Checking your details."); issueForm says "Saving your application"
   // only once every check has passed. The microphone stays on until the outcome is known.
   const issueNow = useCallback(async () => {
-    if (missingRequiredIndexes(answersRef.current).length) {
+    if (endStepIndexes(answersRef.current, skippedRef.current).length) {
       startVoiceReview();
       return;
     }
@@ -2180,11 +2305,11 @@ function useConversationEngine({
     setPhase(PHASE.THINKING);
     setStatusMessage('Checking your details…');
     addChatMessage('assistant', 'Checking your details…');
-    speak(CHECKING_LINE);
+    speakNext(CHECKING_LINE);
     const outcome = await issueFormRef.current({
       say: (text, onEnd) => {
         if (text === SAVING_LINE) addChatMessage('assistant', SAVING_LINE);
-        speak(text, onEnd);
+        speakNext(text, onEnd);
       },
     });
     if (outcome === 'missing') {
@@ -2195,10 +2320,24 @@ function useConversationEngine({
     // 'issued' (survey and counter line next), 'review' (moved to the manual review page,
     // which was said aloud) or 'auth' (login expired): the conversation is over.
     endConversation();
-  }, [speak, endConversation, startVoiceReview, setAwaitingConfirmation, setStatusMessage, setPhase, addChatMessage]);
+  }, [speakNext, endConversation, startVoiceReview, setAwaitingConfirmation, setStatusMessage, setPhase, addChatMessage]);
 
   const listenForReviewCorrections = useCallback(() => {
     if (!conversationActiveRef.current) return;
+
+    // Silence or "Um." at the final approval is not an answer (plan 006): ask again, but after 3 in a row the
+    // automatic listening pauses and the review page's own buttons are what is left.
+    const heardNothing = () => {
+      if (noteNonAnswer('review') >= NON_ANSWER_LIMIT) {
+        stopBrowserListening();
+        setPhase(PHASE.CONFIRMING);
+        setVoiceError('I did not hear you. Please use the buttons on the screen, or press Start Conversation.');
+        return;
+      }
+      speak("I didn't hear anything. Say yes if everything is correct, or say what needs to be changed.", () =>
+        listenForReviewCorrections()
+      );
+    };
 
     listenOnce({
       fieldKey: 'review',   // Whisper hint
@@ -2208,25 +2347,21 @@ function useConversationEngine({
         setStatusMessage('Listening for corrections or approval...');
       },
       onError: (error) => {
-        if (error === 'no-speech') {
-          speak("I didn't hear anything. Say yes if everything is correct, or say what needs to be changed.", () =>
-            listenForReviewCorrections()
-          );
-        }
+        if (error === 'no-speech') heardNothing();
       },
       onEnd: async (heard) => {
         if (!conversationActiveRef.current) return;
         setPhase(PHASE.THINKING);
         const trimmed = heard.trim();
 
-        if (!trimmed) {
-          speak("I didn't hear anything. Say yes if everything is correct, or say what needs to be changed.", () =>
-            listenForReviewCorrections()
-          );
+        if (!trimmed || isFillerOnly(trimmed)) {
+          heardNothing();
           return;
         }
 
-        if (isYesAnswer(trimmed)) {
+        // The final approval is a whole-reply yes (plan 006): "Yes, my surname is Cruz" is a correction.
+        if (isPlainYes(trimmed)) {
+          resetNonAnswers();
           addChatMessage('user', trimmed);
           issueNow();   // asks for any missing answer first instead of saving
           return;
@@ -2235,6 +2370,7 @@ function useConversationEngine({
         // "Go back to my address": ask that question again, then come back to this review.
         const nav = parseNavigation(trimmed);
         if (nav) {
+          resetNonAnswers();
           const target = nav.type === 'goto' ? nav.index : INTERVIEW_FIELDS.length - 1;
           addChatMessage('user', trimmed);
           setStep('interview');
@@ -2245,6 +2381,14 @@ function useConversationEngine({
 
         const corrections = parseVoiceCorrections(trimmed);
         if (!corrections.length) {
+          // Only a real reply resets the run: a refusal does, an unrecognized one ("banana") counts like silence.
+          if (isNoAnswer(trimmed)) resetNonAnswers();
+          else if (noteNonAnswer('review') >= NON_ANSWER_LIMIT) {
+            stopBrowserListening();
+            setPhase(PHASE.CONFIRMING);
+            setVoiceError('I did not understand. Please use the buttons on the screen, or press Start Conversation.');
+            return;
+          }
           const msg = isNoAnswer(trimmed)
             ? 'Okay. Tell me what to change, for example: change surname to Cruz.'
             : "I didn't understand the correction. Please say it like this: change surname to Cruz.";
@@ -2252,6 +2396,7 @@ function useConversationEngine({
           return;
         }
 
+        resetNonAnswers();
         // Check each corrected value the same way as during the interview.
         let checked;
         try {
@@ -2296,11 +2441,39 @@ function useConversationEngine({
         );
       },
     });
-  }, [listenOnce, speak, issueNow, setAnswers, setStatusMessage, setPhase, addChatMessage]);
+  }, [listenOnce, speak, issueNow, stopBrowserListening, setVoiceError, setAnswers, setStatusMessage, setPhase, addChatMessage]);
 
-  latestRef.current = { startVoiceReview, openMissingTyping, listenForMissingChoice, confirmAnswer, showBirthChoices, handleBirthResult };
+  // After a try without an accepted answer (plan 002.2): ask again (`retry`), spell, or skip.
+  // `counted`: the ladder's step was already decided for this turn (a new answer at "is that correct?").
+  // `intro`: said before the spelling prompt when spelling (again).
+  const missAndContinue = useCallback((fieldIndex, retry, { counted = null, intro = '' } = {}) => {
+    // A step already due (the last spoken try was read back) is taken, never counted again.
+    const due = takeDue(ladderRef.current, attemptKeyOf(addressRef.current, fieldIndex, birthRef.current));
+    const next = counted || due || countMissIn(ladderRef.current, addressRef.current, fieldIndex, birthRef.current);
+    if (next === 'skip') {
+      skipField(fieldIndex);
+      return;
+    }
+    if (next === 'spell') {
+      enterSpelling(fieldIndex);
+      startSpelling(fieldIndex, "Let's spell it instead.");   // the spoken tries are used up
+      return;
+    }
+    if (ladderOf(fieldIndex).spelling) {
+      startSpelling(fieldIndex, intro);
+      return;
+    }
+    retry();
+  }, [skipField, startSpelling]);
+
+  latestRef.current = {
+    startVoiceReview, openMissingTyping, listenForMissingChoice, confirmAnswer, handleBirthResult, missAndContinue, startSpelling,
+    leaveMissingBlank,
+  };
 
   return {
+    // The end step's list for the screen (skipped questions live in a ref here).
+    endStepIndexesOf: (values) => endStepIndexes(values, skippedRef.current),
     isConversationActive,
     isSpeaking,
     isListening,
@@ -2339,26 +2512,33 @@ const IssuingOverlay = ({ message }) => createPortal(
 );
 
 /**
- * A required answer that is still blank (skipped during the interview), asked for again
- * before the final "yes": Type it / Say it again, then a text box for that field only.
- * The buttons work like saying "type" or "say it again", even if that word was misheard.
+ * The end step (plan 001.3, widened by plan 002.2): a skipped question, asked for again before the
+ * final "yes": Say it / Type it (and Leave it blank when it is not required), then a text box for
+ * that field only. The buttons work like saying the words, even if a word was misheard. Large
+ * controls: the applicant types if able, otherwise staff type on the same screen.
  */
-const MissingFieldPanel = ({ view, onType, onSay, onTyped }) => {
+const MissingFieldPanel = ({ view, onType, onSay, onTyped, onBlank }) => {
   const [typed, setTyped] = useState('');
+  const [picked, setPicked] = useState({});   // the list code of a picked place or town (plan 002.1)
   const inputRef = useRef(null);
-  useEffect(() => { setTyped(''); }, [view.key]);
+  useEffect(() => { setTyped(''); setPicked({}); }, [view.key]);
   useEffect(() => {
     if (view.mode === 'typing') inputRef.current?.focus();
   }, [view.mode, view.key]);
 
   const submit = (e) => {
     e.preventDefault();
-    if (typed.trim() && !view.checking) onTyped(typed);
+    if (typed.trim() && !view.checking) onTyped(typed, picked);
   };
 
   return (
     <Card accent="warning" className="p-5" role="region" aria-live="polite" aria-label={`Still needed: ${view.label}`}>
-      <p className="text-sm font-semibold text-[var(--color-warning)]">Still needed</p>
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <p className="text-sm font-semibold text-[var(--color-warning)]">Still needed</p>
+        {view.total > 0 && (
+          <Badge tone="warning">{view.left} of {view.total} still needed</Badge>
+        )}
+      </div>
       <p className="mt-1 text-xl font-bold text-[var(--color-neutral-900)] break-words">
         I still need your {view.label.toLowerCase()}.
       </p>
@@ -2366,27 +2546,45 @@ const MissingFieldPanel = ({ view, onType, onSay, onTyped }) => {
       {view.mode === 'choice' && (
         <>
           <p className="mt-1 text-sm text-[var(--color-neutral-600)]">
-            Say <strong>"type"</strong> or <strong>"say it again"</strong>, or tap a button.
+            Say <strong>"say it"</strong> or <strong>"type it"</strong>
+            {view.optional && <>, or <strong>"leave it blank"</strong></>}, or tap a button.
           </p>
           <div className="mt-4 grid grid-cols-1 gap-2 sm:grid-cols-2">
-            <Button size="lg" icon={Keyboard} onClick={onType}>Type it</Button>
-            <Button size="lg" variant="secondary" icon={Mic} onClick={onSay}>Say it again</Button>
+            <Button size="lg" icon={Mic} onClick={onSay}>Say it</Button>
+            <Button size="lg" variant="secondary" icon={Keyboard} onClick={onType}>Type it</Button>
           </div>
+          {view.optional && (
+            <div className="mt-2">
+              <Button size="lg" variant="ghost" onClick={onBlank}>Leave it blank</Button>
+            </div>
+          )}
         </>
       )}
 
       {view.mode === 'typing' && (
         <form onSubmit={submit} className="mt-4 space-y-3">
-          <Input
-            ref={inputRef}
-            label={`Type your ${view.label.toLowerCase()}`}
-            value={typed}
-            onChange={(e) => setTyped(e.target.value)}
-            placeholder={view.hint}
-            error={view.error}
-            required
-            autoComplete="off"
-          />
+          {pickerKind(view.key) === 'text' ? (
+            <Input
+              ref={inputRef}
+              label={`Type your ${view.label.toLowerCase()}`}
+              value={typed}
+              onChange={(e) => setTyped(e.target.value)}
+              placeholder={view.hint}
+              error={view.error}
+              required
+              autoComplete="off"
+            />
+          ) : (
+            // Plan 002.1: pick it (buttons, a date, a place from the list) instead of typing it out.
+            <AnswerPicker
+              fieldKey={view.key}
+              value={typed}
+              onChange={(text, meta) => { setTyped(text); setPicked(meta || {}); }}
+              label={`Your ${view.label.toLowerCase()}`}
+              error={view.error}
+              autoFocus
+            />
+          )}
           <div className="flex flex-col gap-2 sm:flex-row">
             <Button type="submit" size="lg" loading={view.checking} disabled={!typed.trim() || view.checking}>
               Save answer
@@ -2394,6 +2592,11 @@ const MissingFieldPanel = ({ view, onType, onSay, onTyped }) => {
             {view.allowSay && (
               <Button variant="ghost" size="lg" icon={Mic} onClick={onSay} disabled={view.checking}>
                 Say it again instead
+              </Button>
+            )}
+            {view.optional && (
+              <Button variant="ghost" size="lg" onClick={onBlank} disabled={view.checking}>
+                Leave it blank
               </Button>
             )}
           </div>
@@ -2406,18 +2609,15 @@ const MissingFieldPanel = ({ view, onType, onSay, onTyped }) => {
 /**
  * The answer being checked, shown big with its letters, so the applicant can see a
  * misheard name ("Bakus") at a glance instead of listening to it being spelled.
- * Yes / No work like saying them; while spelling, the letters can also be typed.
- * mode 'typing': too many tries, so the answer is typed (or skipped for now). mode 'choose': the
- * place of birth after 2 misses — its closest list entries to tap, or type it (plan 001.8).
+ * Yes / No work like saying them. Plan 002.2: no text box opens by itself in the interview;
+ * "Type it instead" opens one when staff (or the applicant) press it.
  */
-const ConfirmPanel = ({ view, onYes, onNo, onTyped, onPick, onKeep, onSpell, onSkip }) => {
+const ConfirmPanel = ({ view, onYes, onNo, onTyped }) => {
   const [typed, setTyped] = useState('');
   const [showTyping, setShowTyping] = useState(false);
   const mode = view.mode;
   const spelling = mode === 'spelling';
-  const typing = mode === 'typing';
-  const choosing = mode === 'choose';
-  useEffect(() => { setTyped(''); setShowTyping(spelling || typing || choosing); }, [mode, view.value, spelling, typing, choosing]);
+  useEffect(() => { setTyped(''); setShowTyping(false); }, [mode, view.value]);
 
   const letters = String(view.letters || '').toUpperCase().split('');
   const label = view.label.toLowerCase().replace(/\s*\(.*\)/, '');
@@ -2427,8 +2627,15 @@ const ConfirmPanel = ({ view, onYes, onNo, onTyped, onPick, onKeep, onSpell, onS
   };
   let title = `Is your ${label} correct?`;
   if (spelling) title = `Spell your ${label}`;
-  else if (typing) title = `Please type your ${label}`;
-  else if (choosing) title = view.choices?.length ? 'Tap your place of birth, or type it' : 'Please type your place of birth';
+  const typeLink = view.canSpell && !showTyping && (
+    <button
+      type="button"
+      onClick={() => setShowTyping(true)}
+      className="col-span-2 text-sm font-medium text-[var(--color-primary)] underline-offset-2 hover:underline sm:col-span-1"
+    >
+      Type it instead
+    </button>
+  );
 
   return (
     <div
@@ -2463,36 +2670,13 @@ const ConfirmPanel = ({ view, onYes, onNo, onTyped, onPick, onKeep, onSpell, onS
       )}
 
       {spelling && (
-        <p className="mt-2 text-sm text-[var(--color-neutral-600)]">
-          Say the letters one by one, for example <strong>S, A, N, T, O, S</strong>. For two or more names, say
-          {' '}<strong>"space"</strong> between them: <strong>M, A, R, Y, space, A, N, N</strong>.
-        </p>
-      )}
-
-      {typing && view.hint && <p className="mt-1 text-sm text-[var(--color-neutral-600)]">{view.hint}</p>}
-
-      {choosing && view.choices?.length > 0 && (
-        <div className="mt-3 grid gap-2 sm:grid-cols-3">
-          {view.choices.map((choice) => (
-            <Button
-              key={`${choice.value}-${choice.province}`}
-              variant="secondary"
-              size="lg"
-              onClick={() => onPick(choice)}
-              className="h-auto min-h-[2.75rem] min-w-0 whitespace-normal break-words py-2 text-left text-base"
-            >
-              {choice.value}{choice.province ? ' (province)' : ''}
-            </Button>
-          ))}
-        </div>
-      )}
-
-      {choosing && view.typed && (
-        <div className="mt-3">
-          <Button variant="ghost" size="lg" onClick={() => onKeep(view.typed)} className="h-auto min-h-[2.75rem] whitespace-normal break-words text-left">
-            Use "{view.typed}" as typed (not in the list)
-          </Button>
-        </div>
+        <>
+          <p className="mt-2 text-sm text-[var(--color-neutral-600)]">
+            Say the letters one by one, for example <strong>S, A, N, T, O, S</strong>. For two or more names, say
+            {' '}<strong>"space"</strong> between them: <strong>M, A, R, Y, space, A, N, N</strong>.
+          </p>
+          {typeLink && <div className="mt-2">{typeLink}</div>}
+        </>
       )}
 
       {mode === 'confirm' && (
@@ -2501,16 +2685,9 @@ const ConfirmPanel = ({ view, onYes, onNo, onTyped, onPick, onKeep, onSpell, onS
             <FaCheck /> Yes, correct
           </button>
           <button onClick={onNo} className="btn-secondary inline-flex items-center justify-center gap-2">
-            <FaTimes /> {view.canSpell ? 'No, spell it' : 'No, say again'}
+            <FaTimes /> {view.noLabel || 'No, say again'}
           </button>
-          {view.canSpell && !showTyping && (
-            <button
-              onClick={() => setShowTyping(true)}
-              className="col-span-2 text-sm font-medium text-[var(--color-primary)] underline-offset-2 hover:underline sm:col-span-1"
-            >
-              Type it instead
-            </button>
-          )}
+          {typeLink}
         </div>
       )}
 
@@ -2520,20 +2697,13 @@ const ConfirmPanel = ({ view, onYes, onNo, onTyped, onPick, onKeep, onSpell, onS
             <Input
               value={typed}
               onChange={(e) => setTyped(e.target.value)}
-              placeholder={choosing ? 'Type the town or city, and province' : `Type the ${label}`}
+              placeholder={view.key === 'place_of_birth' ? 'Type the town or city, and province' : `Type the ${label}`}
               aria-label={`Type the ${view.label}`}
               error={view.error || ''}
             />
           </div>
           <Button type="submit" size="lg" disabled={!typed.trim()} icon={FaCheck}>Use this</Button>
         </form>
-      )}
-
-      {(typing || choosing) && (
-        <div className="mt-3 flex flex-wrap gap-2">
-          {choosing && <Button variant="ghost" size="sm" onClick={onSpell}>Spell it instead</Button>}
-          <Button variant="ghost" size="sm" onClick={onSkip}>Skip for now</Button>
-        </div>
       )}
     </div>
   );
@@ -2627,13 +2797,13 @@ const ChatBubble = React.memo(({ role, text, isLatest }) => {
 ChatBubble.displayName = 'ChatBubble';
 
 /** Conversational summary row used on the review / voice-review screens. */
-const SummaryRow = React.memo(({ label, value, onChange, onAskAgain, highlighted, error }) => (
+const SummaryRow = React.memo(({ label, value, onChange, onAskAgain, highlighted, error, fieldKey, className = '' }) => (
   <div
     className={`rounded-xl border p-3.5 transition-colors ${
       error
         ? 'border-rose-300 bg-rose-50'
         : highlighted ? 'border-indigo-300 bg-indigo-50' : 'border-gray-100 bg-white hover:border-gray-200'
-    }`}
+    } ${className}`}
   >
     <div className="flex items-center justify-between gap-3">
       <span className="text-sm font-medium text-gray-600">{label}</span>
@@ -2652,7 +2822,12 @@ const SummaryRow = React.memo(({ label, value, onChange, onAskAgain, highlighted
         )}
       </div>
     </div>
-    {onChange ? (
+    {onChange && pickerKind(fieldKey) !== 'text' ? (
+      // Plan 002.1: the same pickers as the end step and manual mode.
+      <div className="mt-1.5 min-w-0">
+        <AnswerPicker fieldKey={fieldKey} value={value || ''} label={label} hideLabel onChange={onChange} />
+      </div>
+    ) : onChange ? (
       <input
         value={value || ''}
         onChange={(e) => onChange(e.target.value)}
@@ -2717,6 +2892,9 @@ const NewApplication = () => {
   const speechAudioRef = useRef(null);
   const speechSequenceRef = useRef(0);
   // Temporary practice log (plan 001.7): the session and the note builder live as long as the page.
+  // Plan 002.1: values picked from a list, { key: { value, meta } }; their codes go with /forms/issue.
+  const pickedRef = useRef({});
+  const notePick = useCallback((key, value, meta = {}) => { pickedRef.current[key] = { value, meta }; }, []);
   const practiceRef = useRef(null);
   if (!practiceRef.current) {
     practiceRef.current = {
@@ -2794,6 +2972,7 @@ const NewApplication = () => {
     setIsSpeaking(true);
     synthesizeAndPlay(text, {
       audioRef: speechAudioRef,
+      isStale: () => speechSequenceRef.current !== sequence,   // a clip still downloading after a newer line or a stop never plays
       onEnd: () => {
         if (speechSequenceRef.current !== sequence) return;
         setIsSpeaking(false);
@@ -2824,7 +3003,9 @@ const NewApplication = () => {
     setIsChecking(true);
     let result;
     try {
-      result = await interpretAnswer(field.key, value);
+      // A place or address still exactly as picked from the list is kept as picked (plan 002.1).
+      const kept = unchangedPicks({ [field.key]: value }, pickedRef.current)[field.key];
+      result = kept !== undefined ? { ok: true, value: kept, display: kept } : await interpretAnswer(field.key, value);
     } catch {
       return false;
     } finally {
@@ -3082,17 +3263,19 @@ const NewApplication = () => {
     let checkedAnswers = latestAnswers;
     try {
       const { data } = await extractionAPI.checkAnswers(latestAnswers);
-      if (!data.ok) {
-        const problems = Object.fromEntries(
-          Object.entries(data.results).filter(([, r]) => !r.ok).map(([key, r]) => [key, r.message])
-        );
+      // Picks still as picked are kept as they are (plan 002.1); the server checks them by their list code.
+      const kept = unchangedPicks(latestAnswers, pickedRef.current);
+      const problems = Object.fromEntries(
+        Object.entries(data.results).filter(([key, r]) => !r.ok && !(key in kept)).map(([key, r]) => [key, r.message])
+      );
+      if (Object.keys(problems).length) {
         const labels = Object.keys(problems).map((key) => FIELD_MAP[key]?.label || key).join(', ');
         setReviewErrors(problems);
         setStatusMessage(`Please check: ${labels}`);
         toast.error(`Please check: ${labels}`);
         return stopAtReview(`Some answers need to be checked: ${labels}. I moved you to the review page. Please look at the screen.`);
       }
-      checkedAnswers = Object.fromEntries(Object.entries(data.results).map(([key, r]) => [key, r.value ?? '']));
+      checkedAnswers = { ...Object.fromEntries(Object.entries(data.results).map(([key, r]) => [key, r.value ?? ''])), ...kept };
       answersRef.current = checkedAnswers;
       setAnswers(checkedAnswers);
       setReviewErrors({});
@@ -3105,7 +3288,8 @@ const NewApplication = () => {
     }
 
     try {
-      const formData = buildApplicantData(checkedAnswers);
+      // A list pick's code is sent only while the answer is still that pick (plan 002.1).
+      const formData = { ...buildApplicantData(checkedAnswers), ...pickedCodes(checkedAnswers, pickedRef.current) };
       const validationErrors = validateFormData(formData);
       if (validationErrors.length > 0) {
         toast.error(`Validation errors:\n${validationErrors.join('\n')}`);
@@ -3177,6 +3361,7 @@ const NewApplication = () => {
   const resetInterview = useCallback(() => {
     practice.session.finish();   // no-op when the CTC was issued
     practice.rec.reset();
+    pickedRef.current = {};
     setStep('interview');
     setCurrentFieldIndex(0);
     setAnswers({});
@@ -3198,6 +3383,7 @@ const NewApplication = () => {
 
   // ── Conversation Engine Hook ──
   const {
+    endStepIndexesOf,
     isConversationActive,
     startConversation,
     stopConversation,
@@ -3221,6 +3407,7 @@ const NewApplication = () => {
     setMissingView,
     setAddressPart,
     practice,
+    notePick,
   });
 
   // What the question card shows: during the voice interview the address is asked in 3 parts, the
@@ -3290,7 +3477,7 @@ const NewApplication = () => {
   if (step === 'voice-review') {
     // The screen matches what the assistant says: missing answers first, and the
     // "please confirm" line only once nothing required is blank.
-    const missingLabels = missingRequiredIndexes(answers).map((index) => INTERVIEW_FIELDS[index].label);
+    const missingLabels = endStepIndexesOf(answers).map((index) => INTERVIEW_FIELDS[index].label);
     const readyToConfirm = awaitingConfirmation && missingLabels.length === 0 && !missingView;
     return (
       <div className="grid grid-cols-1 gap-5 xl:grid-cols-[minmax(0,1fr)_360px]">
@@ -3300,7 +3487,7 @@ const NewApplication = () => {
             <h1 className="text-2xl font-bold text-[var(--color-neutral-900)]">Confirming Your Information</h1>
             {missingLabels.length > 0 ? (
               <p className="mt-1.5 text-sm text-[var(--color-neutral-600)] leading-relaxed">
-                A few required answers are still missing. Type them, or say them again.
+                A few questions were skipped. Say them again, or type them.
               </p>
             ) : (
               <p className="mt-1.5 text-sm text-[var(--color-neutral-600)] leading-relaxed">
@@ -3314,7 +3501,7 @@ const NewApplication = () => {
             <div className="rounded-[var(--radius-lg)] border border-[var(--color-warning)] bg-[var(--color-warning-light)] p-4 text-sm text-[var(--color-neutral-800)] flex items-start gap-2" role="status">
               <FaExclamationTriangle className="shrink-0 mt-0.5 text-[var(--color-warning)]" aria-hidden="true" />
               <div className="min-w-0">
-                <span className="font-semibold">Still needed before saving:</span>{' '}
+                <span className="font-semibold">Still to answer:</span>{' '}
                 <span className="break-words">{missingLabels.join(', ')}</span>
               </div>
             </div>
@@ -3325,7 +3512,8 @@ const NewApplication = () => {
               view={missingView}
               onType={() => tapMissing('type')}
               onSay={() => tapMissing('say')}
-              onTyped={(text) => tapMissing('typed', text)}
+              onTyped={(text, meta) => tapMissing('typed', text, meta)}
+              onBlank={() => tapMissing('blank')}
             />
           )}
 
@@ -3393,11 +3581,11 @@ const NewApplication = () => {
           </div>
         </div>
 
-        <aside className="bg-white border border-gray-200 rounded-xl shadow-sm">
-          <div className="border-b border-gray-100 p-4">
+        <aside className="flex min-h-0 flex-col bg-white border border-gray-200 rounded-xl shadow-sm">
+          <div className="shrink-0 border-b border-gray-100 p-4">
             <h2 className="font-semibold text-gray-900">Applicant Answers</h2>
           </div>
-          <div className="max-h-[calc(100vh-220px)] overflow-auto p-2 space-y-2">
+          <div className="min-h-0 max-h-[calc(100vh-220px)] overflow-auto p-2 space-y-2 xl:max-h-none xl:flex-1 xl:basis-0">
             {INTERVIEW_FIELDS.map((field, index) => (
               <SummaryRow
                 key={field.key}
@@ -3436,20 +3624,26 @@ const NewApplication = () => {
           </div>
         </div>
 
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-          {INTERVIEW_FIELDS.map((field, index) => (
+        <div className="grid grid-cols-1 items-start md:grid-cols-6 gap-3">
+          {INTERVIEW_FIELDS.map((field, index) => (field.key === 'icr_no' && isFilipino(answers) ? null : (
+            // The ICR number is only for a citizenship other than Filipino (plan 002.1).
             <SummaryRow
               key={field.key}
+              fieldKey={field.key}
+              className={['surname', 'given_name', 'middle_name'].includes(field.key)
+                ? 'md:col-span-2'
+                : field.key === 'address' ? 'md:col-span-6' : 'md:col-span-3'}
               label={field.label}
               value={answers[field.key]}
-              onChange={(value) => {
+              onChange={(value, meta) => {
                 setInputMethod('manual');
                 updateReviewField(field.key, value);
+                notePick(field.key, value, meta);
               }}
               onAskAgain={() => goToField(index)}
               error={reviewErrors[field.key]}
             />
-          ))}
+          )))}
         </div>
 
         {!canReview && (
@@ -3596,34 +3790,48 @@ const NewApplication = () => {
               onYes={() => tapConfirm('yes')}
               onNo={() => tapConfirm('no')}
               onTyped={(text) => tapConfirm('typed', text)}
-              onPick={(choice) => tapConfirm('pick', choice)}
-              onKeep={(text) => tapConfirm('keep', text)}
-              onSpell={() => tapConfirm('spell')}
-              onSkip={() => tapConfirm('skip')}
             />
           )}
 
           {/* Input Area */}
           <div className="p-5">
-            <label className="mb-2 block text-sm font-medium text-gray-700" htmlFor="answer-input">
-              {askedField.label}
-            </label>
-            <textarea
-              id="answer-input"
-              ref={inputRef}
-              value={draftAnswer}
-              onChange={(e) => {
-                setInputMethod('manual');
-                setDraftAnswer(e.target.value);
-                if (fieldError) setFieldError('');
-              }}
-              rows={4}
-              placeholder={askedField.hint}
-              className={`input-field resize-none text-base w-full ${fieldError ? '!border-rose-400' : ''}`}
-              aria-label={`Answer for ${askedField.label}`}
-              aria-invalid={Boolean(fieldError)}
-              disabled={isConversationActive}
-            />
+            {!isConversationActive && pickerKind(askedField.key) !== 'text' ? (
+              // Plan 002.1: a fixed set, a date, a number or a place is picked, not typed out.
+              <AnswerPicker
+                key={askedField.key}
+                fieldKey={askedField.key}
+                value={draftAnswer}
+                label={askedField.label}
+                onChange={(text, meta) => {
+                  setInputMethod('manual');
+                  setDraftAnswer(text);
+                  notePick(askedField.key, text, meta);
+                  if (fieldError) setFieldError('');
+                }}
+              />
+            ) : (
+              <>
+                <label className="mb-2 block text-sm font-medium text-gray-700" htmlFor="answer-input">
+                  {askedField.label}
+                </label>
+                <textarea
+                  id="answer-input"
+                  ref={inputRef}
+                  value={draftAnswer}
+                  onChange={(e) => {
+                    setInputMethod('manual');
+                    setDraftAnswer(e.target.value);
+                    if (fieldError) setFieldError('');
+                  }}
+                  rows={4}
+                  placeholder={askedField.hint}
+                  className={`input-field resize-none text-base w-full ${fieldError ? '!border-rose-400' : ''}`}
+                  aria-label={`Answer for ${askedField.label}`}
+                  aria-invalid={Boolean(fieldError)}
+                  disabled={isConversationActive}
+                />
+              </>
+            )}
             {fieldError && (
               <p className="mt-2 text-sm font-medium text-rose-700 flex items-start gap-1.5" role="alert">
                 <FaExclamationTriangle className="shrink-0 mt-0.5" size={13} /> {fieldError}
@@ -3676,13 +3884,6 @@ const NewApplication = () => {
               </button>
             </div>
 
-            <p className="mt-2 text-xs text-gray-500 inline-flex items-center gap-1.5">
-              <FaCommentDots className="text-gray-400" size={12} />
-              Press <strong>Start Conversation</strong> and the assistant will ask every question and show each
-              answer on screen to confirm (yes or no, by voice or by tapping), then show the summary before issuing.
-              <span className="hidden sm:inline"> Shortcut: Ctrl+Enter to save.</span>
-            </p>
-
             {voiceError && (
               <div className="mt-3 rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-800 flex items-start gap-2">
                 <FaExclamationTriangle className="shrink-0 mt-0.5" />
@@ -3728,12 +3929,12 @@ const NewApplication = () => {
       </div>
 
       {/* Sidebar */}
-      <aside className="bg-white border border-gray-200 rounded-xl shadow-sm">
-        <div className="border-b border-gray-100 p-4">
+      <aside className="flex min-h-0 flex-col bg-white border border-gray-200 rounded-xl shadow-sm">
+        <div className="shrink-0 border-b border-gray-100 p-4">
           <h2 className="font-semibold text-gray-900">Applicant Answers</h2>
           <p className="mt-1 text-xs text-gray-500">{answeredCount} of {INTERVIEW_FIELDS.length} fields captured</p>
         </div>
-        <div className="max-h-[calc(100vh-220px)] overflow-auto p-2">
+        <div className="min-h-0 max-h-[calc(100vh-220px)] overflow-auto p-2 xl:max-h-none xl:flex-1 xl:basis-0">
           {INTERVIEW_FIELDS.map((field, index) => {
             const value = answers[field.key];
             const isActive = index === currentFieldIndex;

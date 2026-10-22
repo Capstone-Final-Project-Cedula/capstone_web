@@ -1,70 +1,104 @@
 import {
-  BIRTH_IDLE, birthQuestion, onBirthNo, onBirthPick, onBirthResult, shortcutResult, startBirth,
+  birthLadderKey, birthQuestion, onBirthNo, onBirthResult, onProvinceConfirmed, startBirth,
 } from './birthPlace';
+import * as birthPlace from './birthPlace';
 
-describe('place of birth steps (plan 001.8)', () => {
-  test('the shortcut is asked when the address gave a town', () => {
+const SAN_JOSE = [
+  { value: 'San Jose, Batangas', town: 'San Jose', province: 'Batangas', province_psgc: '10' },
+  { value: 'San Jose, Bohol', town: 'San Jose', province: 'Bohol', province_psgc: '20' },
+  { value: 'San Jose, Tarlac', town: 'San Jose', province: 'Tarlac', province_psgc: '30' },
+  { value: 'San Jose, Nueva Ecija', town: 'San Jose', province: 'Nueva Ecija', province_psgc: '40' },
+];
+const ambiguous = { ok: false, reason: 'ambiguous_town', candidates: SAN_JOSE, suggestions: SAN_JOSE.slice(0, 3) };
+
+describe('place of birth in two read-back steps (plan 006)', () => {
+  test('always starts at the province question: no "Were you born in <town>?" shortcut', () => {
     const birth = startBirth('Baungon, Bukidnon');
-    expect(birth.step).toBe('shortcut');
-    expect(birthQuestion(birth).question).toBe('Were you born in Baungon, Bukidnon?');
-    expect(shortcutResult('Baungon, Bukidnon')).toMatchObject({ ok: true, value: 'Baungon, Bukidnon', birthShortcut: true });
+    expect(birth).toMatchObject({ active: true, step: 'province', pendingTown: null });
+    expect(birthQuestion(birth).key).toBe('place_of_birth_province');
+    expect(birthQuestion(birth).question).toBe(
+      'Which province were you born in? If you were born in a city like Cagayan de Oro, say the city.',
+    );
+    expect(birthPlace.shortcutResult).toBeUndefined();
+    expect(birthPlace.shortcutQuestion).toBeUndefined();
   });
 
-  test('no address town: straight to the province question', () => {
-    expect(startBirth('').step).toBe('province');
-    expect(birthQuestion(startBirth('')).key).toBe('place_of_birth_province');
+  test('a province is read back first; only a yes asks its town', () => {
+    const { birth, action, result } = onBirthResult(startBirth(), { ok: true, value: 'Bukidnon', normalized: '1001300000' });
+    expect(action).toBe('province');
+    expect(result.birthProvince).toEqual({ code: '1001300000', name: 'Bukidnon' });
+    expect(birth.step).toBe('province');            // not advanced before the yes
+    const next = onProvinceConfirmed(birth, result.birthProvince);
+    expect(birthQuestion(next)).toMatchObject({ key: 'place_of_birth_town', logKey: 'place_of_birth' });
+    expect(birthQuestion(next).question).toBe('Which town or city in Bukidnon were you born in?');
   });
 
-  test('a "no" to the shortcut asks the province, without counting a miss', () => {
-    const { birth, action } = onBirthNo(startBirth('Baungon, Bukidnon'));
-    expect(action).toBe('ask');
-    expect(birth).toMatchObject({ step: 'province', misses: 0 });
-  });
-
-  test('a province asks for its town, matched inside it', () => {
-    const { birth, action } = onBirthResult(startBirth(''), { ok: true, value: 'Bukidnon', normalized: '1001300000' });
-    expect(action).toBe('town');
-    expect(birthQuestion(birth)).toMatchObject({ key: 'place_of_birth_town', logKey: 'place_of_birth' });
-    expect(birthQuestion(birth).question).toContain('Bukidnon');
-  });
-
-  test('the province step suggestions are cleared for the town step (Codex, plan 001.8)', () => {
-    const before = { ...startBirth(''), suggestions: [{ value: 'Bukidnon', province: '1001300000' }] };
-    expect(onBirthResult(before, { ok: true, value: 'Bukidnon', normalized: '1001300000' }).birth.suggestions).toEqual([]);
-    expect(onBirthPick(before, { value: 'Bukidnon', province: '1001300000' }).birth.suggestions).toEqual([]);
-  });
-
-  test('a whole place is read back', () => {
+  test('a city with no province is read back and is the whole answer', () => {
     const result = { ok: true, value: 'Iligan City', normalized: '' };
-    expect(onBirthResult(startBirth(''), result).action).toBe('confirm');
+    expect(onBirthResult(startBirth(), result).action).toBe('confirm');
   });
 
-  test('the first miss re-asks, the second shows the choices', () => {
-    const miss = { ok: false, message: 'For example: Bukidnon.', suggestions: [] };
-    const first = onBirthResult(startBirth(''), miss);
-    expect(first.action).toBe('retry');
-    expect(onBirthResult(first.birth, miss).action).toBe('choose');
+  test('a whole place named at the town step is also read back', () => {
+    const town = onProvinceConfirmed(startBirth(), { code: '1', name: 'Bukidnon' });
+    expect(onBirthResult(town, { ok: true, value: 'Polomolok, South Cotabato', normalized: '' }).action).toBe('confirm');
   });
 
-  test('two "no"s to read-backs also lead to the choices', () => {
-    const first = onBirthNo({ ...startBirth(''), step: 'town', province: { code: '1', name: 'Bukidnon' } });
-    expect(first.action).toBe('ask');
-    expect(onBirthNo(first.birth).action).toBe('choose');
+  test('every step has its own ladder key', () => {
+    const town = onProvinceConfirmed(startBirth(), { code: '1', name: 'Bukidnon' });
+    expect(birthLadderKey(startBirth())).toBe('place_of_birth_province');
+    expect(birthLadderKey(town)).toBe('place_of_birth_town');
   });
 
-  test('the 2-miss fallback picks a list entry: a whole place is the answer', () => {
-    const pick = onBirthPick(startBirth(''), { value: 'Lantapan, Bukidnon', province: '' });
-    expect(pick.action).toBe('accept');
-    expect(pick.result).toMatchObject({ ok: true, value: 'Lantapan, Bukidnon' });
+  test('a miss is one try of the step, never a list to tap', () => {
+    const miss = { ok: false, message: 'For example: Bukidnon.', suggestions: [{ value: 'Bukidnon', province: '1' }] };
+    expect(onBirthResult(startBirth(), miss).action).toBe('miss');
+    const town = onProvinceConfirmed(startBirth(), { code: '1', name: 'Bukidnon' });
+    expect(onBirthResult(town, miss).action).toBe('miss');
   });
 
-  test('a picked province asks its town next', () => {
-    const pick = onBirthPick(startBirth(''), { value: 'Bukidnon', province: '1001300000' });
-    expect(pick.action).toBe('town');
-    expect(pick.birth.province).toEqual({ code: '1001300000', name: 'Bukidnon' });
+  test('a "no" to a read-back is a try; the step stays', () => {
+    const town = onProvinceConfirmed(startBirth(), { code: '1', name: 'Bukidnon' });
+    expect(onBirthNo(town)).toEqual({ birth: town, action: 'miss' });
   });
 
-  test('nothing picked: nothing happens', () => {
-    expect(onBirthPick(BIRTH_IDLE, null).action).toBe('none');
+  describe('the same town in several provinces', () => {
+    test('asks "Which province is San Jose in?" and it is not a try', () => {
+      const { birth, action } = onBirthResult(startBirth(), ambiguous);
+      expect(action).toBe('ask');
+      expect(birth.pendingTown.candidates).toHaveLength(4);
+      expect(birthQuestion(birth).question).toBe('Which province is San Jose in?');
+      expect(birthQuestion(birth).key).toBe('place_of_birth_province');
+    });
+
+    test('a candidate beyond the first three resolves to "Town, Province" and is read back', () => {
+      const { birth } = onBirthResult(startBirth(), ambiguous);
+      const out = onBirthResult(birth, { ok: true, value: 'Nueva Ecija', normalized: '40' });
+      expect(out.action).toBe('confirm');
+      expect(out.result.value).toBe('San Jose, Nueva Ecija');
+      expect(out.birth.pendingTown).toBeNull();
+    });
+
+    test('a province that does not have the town is one try, and the question stays', () => {
+      const { birth } = onBirthResult(startBirth(), ambiguous);
+      const out = onBirthResult(birth, { ok: true, value: 'Bukidnon', normalized: '1001300000' });
+      expect(out.action).toBe('miss');
+      expect(out.birth.pendingTown).not.toBeNull();
+    });
+
+    test('a second ambiguous answer is a try, not another question', () => {
+      const { birth } = onBirthResult(startBirth(), ambiguous);
+      expect(onBirthResult(birth, ambiguous).action).toBe('miss');
+    });
+
+    test('a "no" at the read-back clears the pending town', () => {
+      const { birth } = onBirthResult(startBirth(), ambiguous);
+      expect(onBirthNo(birth).birth.pendingTown).toBeNull();
+    });
+  });
+
+  test('the old tap screen and shortcut are gone', () => {
+    expect(birthPlace.BIRTH_MISSES).toBeUndefined();
+    expect(birthPlace.onBirthPick).toBeUndefined();
+    expect(startBirth()).not.toHaveProperty('home');
   });
 });
