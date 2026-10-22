@@ -55,3 +55,30 @@ describe('"oh no" and its variants (plan 002.2)', () => {
     expect(isNoReply('Nobleza')).toBe(false);   // a surname that starts with "no"
   });
 });
+
+describe('isPlainYes and isFillerOnly (plan 006)', () => {
+  const { isPlainYes, isFillerOnly } = require('./replies');
+
+  test.each(['Yes.', 'yes po', 'Opo', 'Okay', 'Correct.', 'Yes please'])('%s approves', (text) => {
+    expect(isPlainYes(text)).toBe(true);
+  });
+
+  test.each([
+    'Yes, my surname is Cruz.', 'Yes but change the address', 'Yes male', 'No', '', 'Yes yes yes yes', 'Y, E, S',
+  ])('%s is not a plain yes', (text) => {
+    expect(isPlainYes(text)).toBe(false);
+  });
+
+  test('the ordinary yes still accepts extra words (001.8), the final approval does not', () => {
+    expect(isYesAnswer('Yes, my surname is Cruz')).toBe(true);
+    expect(isPlainYes('Yes, my surname is Cruz')).toBe(false);
+  });
+
+  test.each(['Um.', 'Uh', 'Uhm', 'Hmm', 'Mm', 'Ah', 'Eh', 'Er', 'um... uh', 'Mm-hmm.'])('%s is a filler', (text) => {
+    expect(isFillerOnly(text)).toBe(true);
+  });
+
+  test.each(['', 'Umali', 'Um, Purok 2', 'yes', 'Ahmad'])('%s is not only fillers', (text) => {
+    expect(isFillerOnly(text)).toBe(false);
+  });
+});

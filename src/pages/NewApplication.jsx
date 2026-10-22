@@ -28,11 +28,12 @@ import SusSurveyDialog from '../components/sus/SusSurveyDialog';
 import ConsentNotice from '../components/interview/ConsentNotice';
 import AnswerPicker from '../components/interview/AnswerPicker';
 import { combineSpelling, looksSpelled, titleCaseSpelled } from '../utils/spelling';
-import { isNoAnswer, isNoReply, isYesAnswer, normalizeReply } from '../utils/replies';
+import { isFillerOnly, isNoAnswer, isNoReply, isPlainYes, isYesAnswer, normalizeReply } from '../utils/replies';
 import { ADDRESS_PARTS, addressTownOf, joinAddress } from '../utils/address';
 import { checkAnswer } from '../utils/answerCheck';
 import {
-  BIRTH_IDLE, BIRTH_PROVINCE_STEP, birthQuestion, onBirthNo, onBirthResult, shortcutResult, startBirth,
+  BIRTH_IDLE, BIRTH_LADDER_KEYS, BIRTH_PROVINCE_STEP, birthLadderKey, birthQuestion, onBirthNo, onBirthResult,
+  onProvinceConfirmed, startBirth,
 } from '../utils/birthPlace';
 import { newLadder, noButtonLabel, onMiss, startSpellingLadder, takeDue, withDue } from '../utils/ladder';
 import { COUNTER_LINE, COUNTER_SCREEN_LINE } from '../utils/counterFlow';
@@ -168,6 +169,9 @@ const REVIEW_PROMPT =
 const CHECKING_LINE = 'Checking your details.';
 const SAVING_LINE = 'Saving your application, please wait.';
 
+// A filler, silence or "Please say yes or no." in a row at one question (plan 006): then listening pauses.
+const NON_ANSWER_LIMIT = 3;
+
 const isBlank = (value) => !String(value ?? '').trim();
 
 // Required questions still blank (e.g. skipped after too many tries), in interview order.
@@ -203,9 +207,13 @@ const isAddressPartOf = (address, fieldIndex) => INTERVIEW_FIELDS[fieldIndex]?.k
 const questionOf = (address, fieldIndex) => (isAddressPartOf(address, fieldIndex)
   ? ADDRESS_PARTS[address.part]
   : INTERVIEW_FIELDS[fieldIndex]);
-const attemptKeyOf = (address, fieldIndex) => (isAddressPartOf(address, fieldIndex) ? ADDRESS_PARTS[address.part].key : fieldIndex);
-// The place of birth is asked in steps by voice (plan 001.8). `birth` = see utils/birthPlace.js.
+// The place of birth is asked in steps by voice (plan 001.8, 006). `birth` = see utils/birthPlace.js.
 const isBirthStepOf = (birth, fieldIndex) => INTERVIEW_FIELDS[fieldIndex]?.key === 'place_of_birth' && birth.active;
+// The key a question counts its tries on: the field, an address part, or one place-of-birth step (plan 006).
+const attemptKeyOf = (address, fieldIndex, birth = BIRTH_IDLE) => {
+  if (isAddressPartOf(address, fieldIndex)) return ADDRESS_PARTS[address.part].key;
+  return isBirthStepOf(birth, fieldIndex) ? birthLadderKey(birth) : fieldIndex;
+};
 // The question being asked: an address part, a place-of-birth step, or the field itself.
 const askedOf = (address, birth, fieldIndex) => (isBirthStepOf(birth, fieldIndex)
   ? birthQuestion(birth)
@@ -216,8 +224,8 @@ const logKeyOf = (asked) => asked.logKey || asked.key;
 const canSpellAt = (address, fieldIndex) => SPELLABLE_KEYS.has(INTERVIEW_FIELDS[fieldIndex].key) && !isAddressPartOf(address, fieldIndex);
 // One try without an accepted answer on the question being asked (plan 002.2): 'again', 'spell' or 'skip'.
 // `ladders`: { [field index or address part key]: ladder }, changed in place.
-const countMissIn = (ladders, address, fieldIndex) => {
-  const key = attemptKeyOf(address, fieldIndex);
+const countMissIn = (ladders, address, fieldIndex, birth = BIRTH_IDLE) => {
+  const key = attemptKeyOf(address, fieldIndex, birth);
   const { ladder, next } = onMiss(ladders[key] || newLadder(), { canSpell: canSpellAt(address, fieldIndex) });
   ladders[key] = ladder;
   return next;
@@ -615,7 +623,7 @@ const fetchSpeech = (text) => {
 /** Start generating a line in the background; it plays instantly when needed. */
 const prefetchSpeech = (...texts) => texts.forEach((t) => fetchSpeech(t).catch(() => {}));
 
-const synthesizeAndPlay = async (text, { onStart, onEnd, audioRef } = {}) => {
+const synthesizeAndPlay = async (text, { onStart, onEnd, audioRef, isStale } = {}) => {
   const spoken = String(text || '').trim();
   if (!spoken) {
     onEnd?.();
@@ -633,10 +641,15 @@ const synthesizeAndPlay = async (text, { onStart, onEnd, audioRef } = {}) => {
 
   stopCurrentAudio();
 
+  // `isStale()`: a newer line or a cancel came while this clip was still downloading (plan 006). A stale clip
+  // never plays and never touches the newer line's audio (audioRef, speechSynthesis).
+  const stale = () => Boolean(isStale?.());
+  let audio = null;
   try {
     const blob = await fetchSpeech(spoken);
+    if (stale()) return;
     const url = window.URL.createObjectURL(blob);
-    const audio = new Audio(url);
+    audio = new Audio(url);
     if (audioRef) audioRef.current = audio;
 
     await new Promise((resolve) => {
@@ -655,6 +668,7 @@ const synthesizeAndPlay = async (text, { onStart, onEnd, audioRef } = {}) => {
       });
     });
   } catch (error) {
+    if (stale()) return;   // a failed clip nobody waits for any more: the newer line is not disturbed
     console.warn('Backend voice unavailable, using browser voice instead:', error);
     stopCurrentAudio();
     if (window.speechSynthesis) {
@@ -671,7 +685,8 @@ const synthesizeAndPlay = async (text, { onStart, onEnd, audioRef } = {}) => {
       });
     }
   } finally {
-    if (audioRef) audioRef.current = null;
+    // Only this line's own audio is released; a newer line may already own the ref.
+    if (audioRef && audio && audioRef.current === audio) audioRef.current = null;
     onEnd?.();
   }
 };
@@ -807,7 +822,8 @@ const parseNavigation = (transcript) => {
 
 const parseVoiceCorrections = (transcript) => {
   const spoken = String(transcript || '').trim();
-  if (!spoken || isYesAnswer(spoken) || isNoAnswer(spoken)) return [];
+  // Only a whole-reply yes is skipped: "Yes, my surname is Cruz" is a correction (plan 006).
+  if (!spoken || isPlainYes(spoken) || isNoAnswer(spoken)) return [];
 
   const fieldAliases = FIELD_ALIASES;
 
@@ -856,6 +872,10 @@ function useSpeechSynthesis() {
   const [isSpeaking, setIsSpeaking] = useState(false);
   const audioRef = useRef(null);
   const speechSequenceRef = useRef(0);
+  // speakInOrder() lines wait for each other; speak() / cancel() drop them (plan 006).
+  const chainRef = useRef(Promise.resolve());
+  const queuedRef = useRef(0);
+  const waitersRef = useRef(new Set());
 
   const cancel = useCallback(() => {
     speechSequenceRef.current += 1;
@@ -865,6 +885,8 @@ function useSpeechSynthesis() {
       audioRef.current.src = '';
       audioRef.current = null;
     }
+    waitersRef.current.forEach((release) => release());   // queued lines waiting for a stopped clip move on (and drop)
+    waitersRef.current.clear();
     setIsSpeaking(false);
   }, []);
 
@@ -875,6 +897,7 @@ function useSpeechSynthesis() {
     setIsSpeaking(true);
     synthesizeAndPlay(text, {
       audioRef,
+      isStale: () => speechSequenceRef.current !== sequence,
       onEnd: () => {
         if (speechSequenceRef.current !== sequence) return;
         setIsSpeaking(false);
@@ -883,9 +906,32 @@ function useSpeechSynthesis() {
     });
   }, [cancel]);
 
+  // The closing lines ("Checking your details." -> "Saving your application" -> the counter line): each plays to
+  // its end before the next starts. The first replaces whatever interview line is playing; a later speak() or
+  // cancel() (a newer interview prompt) drops the lines still waiting.
+  const speakInOrder = useCallback((text, onEnd) => {
+    if (!queuedRef.current) cancel();
+    const epoch = speechSequenceRef.current;
+    queuedRef.current += 1;
+    setIsSpeaking(true);
+    chainRef.current = chainRef.current.then(async () => {
+      try {
+        if (speechSequenceRef.current !== epoch) return;
+        await new Promise((resolve) => {
+          waitersRef.current.add(resolve);
+          synthesizeAndPlay(text, { audioRef, isStale: () => speechSequenceRef.current !== epoch, onEnd: resolve });
+        });
+        if (speechSequenceRef.current === epoch) onEnd?.();
+      } finally {
+        queuedRef.current -= 1;
+        if (!queuedRef.current && speechSequenceRef.current === epoch) setIsSpeaking(false);
+      }
+    });
+  }, [cancel]);
+
   useEffect(() => () => cancel(), [cancel]);
 
-  return { isSpeaking, speak, cancel };
+  return { isSpeaking, speak, speakInOrder, cancel };
 }
 
 /**
@@ -1155,7 +1201,7 @@ function useConversationEngine({
   practice,   // temporary practice log (plan 001.7): { session, rec }
   notePick,   // plan 002.1: (key, value, meta) a value picked from a list, for its code at issue
 }) {
-  const { isSpeaking, speak: rawSpeak, cancel: cancelSpeech } = useSpeechSynthesis();
+  const { isSpeaking, speak: rawSpeak, speakInOrder: rawSpeakInOrder, cancel: cancelSpeech } = useSpeechSynthesis();
   const browser = useBrowserSpeechRecognition();
   const whisper = useWhisperListener();
   const [isConversationActive, setIsConversationActive] = useState(false);
@@ -1227,6 +1273,12 @@ function useConversationEngine({
     setPhase(PHASE.SPEAKING);
     rawSpeak(text, onEnd);
   }, [rawSpeak, setPhase]);
+
+  // The closing lines wait for each other instead of cutting each other off (plan 006).
+  const speakNext = useCallback((text, onEnd) => {
+    setPhase(PHASE.SPEAKING);
+    rawSpeakInOrder(text, onEnd);
+  }, [rawSpeakInOrder, setPhase]);
 
   const stopConversation = useCallback(() => {
     setIsConversationActive(false);
@@ -1307,20 +1359,21 @@ function useConversationEngine({
   // `active` while those questions run; each confirmed answer is kept in `results` and they are joined
   // into the one address answer after the last one.
   const addressRef = useRef({ active: false, part: 0, results: {} });
-  // The place of birth in steps (plan 001.8): the "Were you born in <town>?" shortcut, the province,
-  // then a town of it. `homeTownRef`: the town of the address answers ("Baungon, Bukidnon").
+  // The place of birth in two read-back steps (plan 006): the province (or a city), then a town of it.
   const birthRef = useRef(BIRTH_IDLE);
-  const homeTownRef = useRef('');
 
   // The voice ladder per question (plan 002.2, utils/ladder.js): 3 spoken tries, then 2 spelled tries
   // (spellable fields), then the question is skipped and asked again at the end. Nothing opens a text
-  // box mid-interview. Keyed by the field index, or by the address part being asked.
+  // box mid-interview. Keyed by the field index, the address part being asked, or the place-of-birth step.
   const ladderRef = useRef({});
-  const resetLadder = (key) => { delete ladderRef.current[key]; };
-  const ladderOf = (fieldIndex) => ladderRef.current[attemptKeyOf(addressRef.current, fieldIndex)] || newLadder();
+  const resetLadder = (key) => {
+    delete ladderRef.current[key];
+    if (INTERVIEW_FIELDS[key]?.key === 'place_of_birth') BIRTH_LADDER_KEYS.forEach((k) => { delete ladderRef.current[k]; });
+  };
+  const ladderOf = (fieldIndex) => ladderRef.current[attemptKeyOf(addressRef.current, fieldIndex, birthRef.current)] || newLadder();
   // The applicant spelled on their own at "is that correct?": the spelled tries count from now on.
   const enterSpelling = (fieldIndex) => {
-    const key = attemptKeyOf(addressRef.current, fieldIndex);
+    const key = attemptKeyOf(addressRef.current, fieldIndex, birthRef.current);
     ladderRef.current[key] = startSpellingLadder(ladderRef.current[key] || newLadder());
   };
   // The questions skipped during the interview, asked again at the end (plan 002.2).
@@ -1335,6 +1388,14 @@ function useConversationEngine({
 
   // The on-screen confirmation panel (see confirmAnswer).
   const confirmTurnRef = useRef(0);        // a tap ends the voice turn in progress
+  // Non-answers in a row at one question ("Um.", silence at a yes/no step, "Please say yes or no.", plan 006): they
+  // are not tries, so after NON_ANSWER_LIMIT the automatic listening pauses instead of asking for ever.
+  const nonAnswerRef = useRef({ key: null, count: 0 });
+  const noteNonAnswer = (key) => {
+    nonAnswerRef.current = { key, count: nonAnswerRef.current.key === key ? nonAnswerRef.current.count + 1 : 1 };
+    return nonAnswerRef.current.count;
+  };
+  const resetNonAnswers = () => { nonAnswerRef.current = { key: null, count: 0 }; };
   const pendingConfirmRef = useRef(null);  // { fieldIndex, result } while the panel is up
 
   // The missing-answers step before the final "yes" (plan 001.3).
@@ -1355,7 +1416,7 @@ function useConversationEngine({
       ADDRESS_PARTS.forEach((p) => resetLadder(p.key));
     }
     if (field.key === 'place_of_birth' && !birthRef.current.active) {
-      birthRef.current = startBirth(homeTownRef.current);   // the shortcut first when the address gave a town
+      birthRef.current = startBirth();   // always the province (or city) question first
     }
     const asked = askedOf(addressRef.current, birthRef.current, fieldIndex);
     practice.rec.asked(logKeyOf(asked));   // practice log: the clock starts at the first ask only
@@ -1366,11 +1427,6 @@ function useConversationEngine({
     setAddressPart(inSteps ? asked : null);
     setDraftAnswer(inSteps ? '' : answersRef.current[field.key] || '');
     setAwaitingConfirmation(false);
-    if (isBirthStepOf(birthRef.current, fieldIndex) && birthRef.current.step === 'shortcut') {
-      // "Were you born in Baungon, Bukidnon?": a yes is the answer, a no asks the province.
-      latestRef.current.confirmAnswer(fieldIndex, shortcutResult(birthRef.current.home));
-      return;
-    }
     setPhase(PHASE.ASKING);
     setStatusMessage(`Asking about your ${asked.label.toLowerCase()}`);
     addChatMessage('assistant', asked.question);
@@ -1429,6 +1485,17 @@ function useConversationEngine({
   // Save a confirmed answer and go to the next question.
   const acceptAnswer = useCallback((fieldIndex, result) => {
     const field = INTERVIEW_FIELDS[fieldIndex];
+    resetNonAnswers();
+    if (result.birthProvince && isBirthStepOf(birthRef.current, fieldIndex)) {
+      // The province was read back and confirmed (plan 006): now its town. Step 1's tries are over.
+      delete ladderRef.current.place_of_birth_province;
+      birthRef.current = onProvinceConfirmed(birthRef.current, result.birthProvince);
+      spelledRef.current = '';
+      clearConfirmView();
+      addChatMessage('assistant', `Province: ${result.value}`);
+      askQuestion(fieldIndex);
+      return;
+    }
     if (isAddressPartOf(addressRef.current, fieldIndex)) {
       // One part of the address confirmed: ask the next part, or join the three into the address.
       const address = addressRef.current;
@@ -1447,7 +1514,6 @@ function useConversationEngine({
         return;
       }
       const joined = joinAddress(address.results);
-      homeTownRef.current = address.results.address_town?.value || '';   // for "Were you born in ...?"
       addressRef.current = { active: false, part: 0, results: {} };
       setAddressPart(null);
       result = { ...result, value: joined, display: joined };
@@ -1543,7 +1609,7 @@ function useConversationEngine({
       value: shown,
       // Letter tiles only where spelling matters (names), not for dates, numbers or a place from the list.
       letters: SPELLABLE_KEYS.has(field.key) && !birthSteps ? String(result.value || '') : '',
-      canSpell: SPELLABLE_KEYS.has(field.key) && !birthSteps,
+      canSpell: SPELLABLE_KEYS.has(field.key),   // also a place-of-birth step (plan 006): spelled, matched to its list
       // What a no does next on the ladder (plan 002.2): say it again, spell it, or skip it for now.
       noLabel: noButtonLabel(ladderOf(fieldIndex), { canSpell: canSpellAt(addressRef.current, fieldIndex) }),
       note: result.warnings?.[0] || '',
@@ -1561,21 +1627,18 @@ function useConversationEngine({
   // The answer was wrong ("no" at "is that correct?"): one try of the ladder (plan 002.2). Names are
   // asked again like every other field; spelling starts only when the spoken tries are used up.
   const fixAnswer = useCallback((fieldIndex) => {
-    if (isBirthStepOf(birthRef.current, fieldIndex)) {
-      // "No" to the shortcut is an answer: the province is asked. "No" to a place: that step again.
-      const { birth, action } = onBirthNo(birthRef.current);
-      birthRef.current = birth;
-      if (action === 'ask') askQuestion(fieldIndex);
-      else latestRef.current.missAndContinue(fieldIndex, () => askQuestion(fieldIndex));
-      return;
-    }
+    // A "no" at a place-of-birth read-back forgets a pending town (the step's question stays).
+    const birthStep = isBirthStepOf(birthRef.current, fieldIndex);
+    if (birthStep) birthRef.current = onBirthNo(birthRef.current).birth;
     latestRef.current.missAndContinue(fieldIndex, () => {
       clearConfirmView();
-      const msg = `Okay. Please say your ${askedOf(addressRef.current, birthRef.current, fieldIndex).label.toLowerCase().replace(/\s*\(.*\)/, '')} again.`;
+      // The question as the step is now (a forgotten pending town asks the province again).
+      const label = askedOf(addressRef.current, birthRef.current, fieldIndex).label;
+      const msg = `Okay. Please say your ${label.toLowerCase().replace(/\s*\(.*\)/, '')} again.`;
       addChatMessage('assistant', msg);
       speak(msg, () => listenForAnswer(fieldIndex));
     });
-  }, [speak, askQuestion, clearConfirmView, addChatMessage]);
+  }, [speak, clearConfirmView, addChatMessage]);
 
   const listenForConfirmation = useCallback((fieldIndex, result) => {
     const turn = confirmTurnRef.current;
@@ -1596,60 +1659,41 @@ function useConversationEngine({
       onEnd: (heard, meta = {}) => {
         if (!conversationActiveRef.current || turn !== confirmTurnRef.current) return;
         const reply = heard.trim();
-        // The shortcut ("Were you born in Baungon, Bukidnon?") is the place-of-birth answer itself: a try.
-        const noteShortcut = (parsed, partial) => {
-          if (!result.birthShortcut) return;
-          practice.rec.heard('place_of_birth', { text: reply, engine: meta.engine || engineRef.current, seconds: meta.seconds });
-          practice.rec.parsed('place_of_birth', parsed, { partial });
-        };
-        if (!reply) {
-          if (result.birthShortcut) {
-            noteShortcut({ ok: false, value: '' }, true);
-            fixAnswer(fieldIndex);   // no reply to the shortcut: ask the province
+        if (!reply || isFillerOnly(reply)) {
+          // Silence or "Um." is never consent and not a try (plan 006): say it again, up to 3 in a row; then the
+          // automatic listening pauses and the Yes / No buttons stay on the screen.
+          if (noteNonAnswer(`confirm-${fieldIndex}`) >= NON_ANSWER_LIMIT) {
+            confirmTurnRef.current += 1;
+            setPhase(PHASE.CONFIRMING);
+            setVoiceError('I did not hear a yes or no. Please tap Yes or No below.');
             return;
           }
-          // Silence is never consent: leave this answer pending and listen again.
           speak('Please say yes or no.', () => listenForConfirmation(fieldIndex, result));
           return;
         }
+        resetNonAnswers();
         addChatMessage('user', reply);
         // A clear yes wins over navigation words heard in the same reply ("Yes. Go back."); only a
         // reply that is just "go back" / "change my address" moves (plan 001.6).
         if (isYesAnswer(reply)) {
-          noteShortcut(result, false);
-          // A yes to "Were you born in <town>?" is the place-of-birth answer itself (a yes to "is that correct?" is not).
-          if (result.birthShortcut) logAnswerTiming('place_of_birth', meta);
           spelledRef.current = '';
           acceptAnswer(fieldIndex, result);
           return;
         }
         if (handleNavigation(reply, fieldIndex)) return;
-        if (result.birthShortcut) {
-          if (isNoReply(reply)) {
-            noteShortcut({ ok: false, value: '' }, true);
-            fixAnswer(fieldIndex);
-          } else {
-            // Not yes or no: taken as the answer to the province question ("Malaybalay, Bukidnon").
-            birthRef.current = { ...birthRef.current, step: 'province' };
-            handleSpokenAnswer(fieldIndex, reply, {
-              shown: true, engine: meta.engine, seconds: meta.seconds, spokeEndedAt: meta.spokeEndedAt, cutOffAt: meta.cutOffAt,
-            });
-          }
-          return;
-        }
-        const spellable = SPELLABLE_KEYS.has(INTERVIEW_FIELDS[fieldIndex].key) && !isBirthStepOf(birthRef.current, fieldIndex);
+        const spellable = SPELLABLE_KEYS.has(INTERVIEW_FIELDS[fieldIndex].key);
         if (spellable && looksSpelled(reply)) {
           // Letters instead of yes/no: they are spelling it (or adding to their spelling). From now on the
           // spelled tries count. Already spelling: the read-back was wrong, so this is one spelled try
           // (Codex verify, plan 002.2: otherwise new spellings could go on without a limit).
           // `counted`: this turn's step, so a rejected spelling is not counted a second time.
-          const key = attemptKeyOf(addressRef.current, fieldIndex);
+          const key = attemptKeyOf(addressRef.current, fieldIndex, birthRef.current);
           const due = takeDue(ladderRef.current, key);
           let counted = null;
           if (due || !ladderOf(fieldIndex).spelling) {
             enterSpelling(fieldIndex);       // the first spelling: a try only if it fails
           } else {
-            counted = countMissIn(ladderRef.current, addressRef.current, fieldIndex);
+            counted = countMissIn(ladderRef.current, addressRef.current, fieldIndex, birthRef.current);
             if (counted === 'skip') {
               spelledRef.current = '';
               skipField(fieldIndex);
@@ -1670,7 +1714,7 @@ function useConversationEngine({
           // (it may be right, even on the last try); only if it fails too does the ladder's next step
           // (`counted`: again / spell / skip) happen, without counting the same turn a second time.
           spelledRef.current = '';
-          const key = attemptKeyOf(addressRef.current, fieldIndex);
+          const key = attemptKeyOf(addressRef.current, fieldIndex, birthRef.current);
           const due = takeDue(ladderRef.current, key);
           if (due) {
             // The last spoken try was already this read-back's answer: its step happens now (no more re-answers).
@@ -1678,7 +1722,7 @@ function useConversationEngine({
             return;
           }
           if (isBirthStepOf(birthRef.current, fieldIndex)) birthRef.current = onBirthNo(birthRef.current).birth;
-          const next = countMissIn(ladderRef.current, addressRef.current, fieldIndex);
+          const next = countMissIn(ladderRef.current, addressRef.current, fieldIndex, birthRef.current);
           // The last spoken try: still read back once (it may be right); anything but yes then spells or skips.
           if (next !== 'again') ladderRef.current[key] = withDue(ladderRef.current[key], next);
           handleSpokenAnswer(fieldIndex, reply, {
@@ -1697,11 +1741,7 @@ function useConversationEngine({
   // `intro`: said first ("Bakus is not in the list of places. Let's spell it again.").
   const startSpelling = useCallback((fieldIndex, intro = '') => {
     const field = INTERVIEW_FIELDS[fieldIndex];
-    if (field.key === 'place_of_birth') {
-      // The whole place is spelled ("Malaybalay space City"): the province and town steps are over.
-      birthRef.current = BIRTH_IDLE;
-      setAddressPart(null);
-    }
+    // A place of birth is spelled at the step being asked (province or town) and matched against that step's list.
     spelledRef.current = '';
     confirmTurnRef.current += 1;
     pendingConfirmRef.current = { fieldIndex, result: null };
@@ -1714,7 +1754,7 @@ function useConversationEngine({
     addChatMessage('assistant', prompt);
     if (intro) speak(intro, () => speak(prompt, () => listenForLetters(fieldIndex)));
     else speak(prompt, () => listenForLetters(fieldIndex));
-  }, [speak, setDraftAnswer, setPhase, setStatusMessage, addChatMessage, setConfirmView, setAddressPart]);
+  }, [speak, setDraftAnswer, setPhase, setStatusMessage, addChatMessage, setConfirmView]);
 
   const listenForLetters = useCallback((fieldIndex) => {
     const turn = confirmTurnRef.current;
@@ -1773,15 +1813,29 @@ function useConversationEngine({
     // kept exactly as spelled, never "corrected" by the system.
     let result;
     const turn = confirmTurnRef.current;   // a tap (pick, skip, another typed answer) while checking wins
+    // Spelled by voice at a place-of-birth step: matched against that step's list (the province, or the town of it).
+    const birthSpelled = isBirthStepOf(birthRef.current, fieldIndex) && !typed;
+    const asked = askedOf(addressRef.current, birthRef.current, fieldIndex);
     try {
       // Spelled by voice, a place of birth is checked like a spoken one: only a list place, never offline.
-      result = await interpretAnswer(field.key, spelledValue, { spoken: field.key === 'place_of_birth' && !typed });
+      result = await interpretAnswer(birthSpelled ? asked.key : field.key, spelledValue, {
+        spoken: field.key === 'place_of_birth' && !typed,
+        province: birthSpelled && asked.key === 'place_of_birth_town' ? birthRef.current.province?.code : null,
+      });
     } catch {
       return;
     }
     if (!conversationActiveRef.current || turn !== confirmTurnRef.current) return;
     if (!typed) logAnswerTiming(field.key, heardBy);   // every branch below puts the answer on screen now
     practice.rec.heard(field.key, { text: letters, engine: typed ? 'typed' : 'spelled' });
+    if (birthSpelled) {
+      // The step's own read-back (province, town, or a whole place); a miss is a spelled try of that step.
+      latestRef.current.handleBirthResult(fieldIndex, result.reason === 'unclear' ? { ...result, ok: false, reason: 'invalid' } : result, {
+        counted,
+        intro: `${result.message || 'That is not in the list of places.'} Let's spell it again.`,
+      });
+      return;
+    }
     practice.rec.parsed(field.key, result);
     // "Sorry" / "What?" while spelling a place is not a place either (only names keep the unclear pass).
     if (!result.ok && (result.reason !== 'unclear' || field.key === 'place_of_birth')) {
@@ -1853,20 +1907,22 @@ function useConversationEngine({
   // One place-of-birth step answered (plan 001.8): a province asks its town, a whole place is read back.
   // A miss on any step is one try of the question's one ladder (plan 002.2): 3 spoken, then spell the
   // whole place, then skip. `counted`: the ladder's step already decided at "is that correct?".
-  const handleBirthResult = useCallback((fieldIndex, result, { counted = null } = {}) => {
+  const handleBirthResult = useCallback((fieldIndex, result, { counted = null, intro = '' } = {}) => {
     if (result.reason === 'unclear') {   // "What?" / "Pakiulit": the question again, not a miss
       practice.rec.parsed('place_of_birth', result, { partial: true });
       speak(result.message, () => askQuestion(fieldIndex));
       return;
     }
-    const { birth, action } = onBirthResult(birthRef.current, result);
+    const { birth, action, result: shown = result } = onBirthResult(birthRef.current, result);
     birthRef.current = birth;
     practice.rec.parsed('place_of_birth', result, { partial: action !== 'confirm' });
-    if (action === 'town') {
-      addChatMessage('assistant', `Province: ${result.value}`);
+    if (action === 'province' || action === 'confirm') {
+      // Each match is read back before the next step (plan 006): "Bukidnon. Is that correct?" asks the town after a yes.
+      confirmAnswer(fieldIndex, shown);
+    } else if (action === 'ask') {
+      // The same town in several provinces: "Which province is San Jose in?" This is not a try.
+      addChatMessage('assistant', result.message);
       askQuestion(fieldIndex);
-    } else if (action === 'confirm') {
-      confirmAnswer(fieldIndex, result);
     } else {
       // Not a place, or the answer check is down ('offline': a spoken place is never taken by the local check).
       latestRef.current.missAndContinue(fieldIndex, () => {
@@ -1874,7 +1930,7 @@ function useConversationEngine({
         setStatusMessage(result.message);
         addChatMessage('assistant', result.message);
         speak(result.message, () => listenForAnswer(fieldIndex));
-      }, { counted });
+      }, { counted, intro });
     }
   }, [speak, askQuestion, confirmAnswer, listenForAnswer, setPhase, setStatusMessage, addChatMessage, practice]);
 
@@ -1906,6 +1962,21 @@ function useConversationEngine({
     if (spokenValue && !heardBy.shown) addChatMessage('user', spokenValue);
     if (spokenValue && handleNavigation(spokenValue, fieldIndex)) return;   // "go back to my surname"
     recordHeard();
+    if (isFillerOnly(spokenValue)) {
+      // "Um." is not an answer and not a try (plan 006): ask again; after 3 in a row the listening pauses.
+      if (noteNonAnswer(`ask-${attemptKeyOf(addressRef.current, fieldIndex, birthRef.current)}`) >= NON_ANSWER_LIMIT) {
+        stopConversation();
+        setVoiceError('I did not hear an answer. Press Start Conversation to continue, or type the answer.');
+        return;
+      }
+      const msg = `I didn't hear an answer. Please tell me your ${spokenLabel(asked)}.`;
+      setPhase(PHASE.RETRY);
+      setStatusMessage(msg);
+      addChatMessage('assistant', msg);
+      speak(msg, () => listenForAnswer(fieldIndex));
+      return;
+    }
+    resetNonAnswers();
     setPhase(PHASE.THINKING);
     setStatusMessage('Understanding your answer...');
 
@@ -1955,7 +2026,7 @@ function useConversationEngine({
       return;
     }
     confirmAnswer(fieldIndex, result);
-  }, [speak, askQuestion, acceptAnswer, confirmAnswer, handleBirthResult, setStatusMessage, setPhase, addChatMessage, practice]);
+  }, [speak, askQuestion, acceptAnswer, confirmAnswer, handleBirthResult, stopConversation, setVoiceError, setStatusMessage, setPhase, addChatMessage, practice]);
 
   // Get the microphone and switch the conversation on. Returns false when voice cannot run.
   const activateVoice = useCallback(async () => {
@@ -2220,11 +2291,11 @@ function useConversationEngine({
     setPhase(PHASE.THINKING);
     setStatusMessage('Checking your details…');
     addChatMessage('assistant', 'Checking your details…');
-    speak(CHECKING_LINE);
+    speakNext(CHECKING_LINE);
     const outcome = await issueFormRef.current({
       say: (text, onEnd) => {
         if (text === SAVING_LINE) addChatMessage('assistant', SAVING_LINE);
-        speak(text, onEnd);
+        speakNext(text, onEnd);
       },
     });
     if (outcome === 'missing') {
@@ -2235,7 +2306,7 @@ function useConversationEngine({
     // 'issued' (survey and counter line next), 'review' (moved to the manual review page,
     // which was said aloud) or 'auth' (login expired): the conversation is over.
     endConversation();
-  }, [speak, endConversation, startVoiceReview, setAwaitingConfirmation, setStatusMessage, setPhase, addChatMessage]);
+  }, [speak, speakNext, endConversation, startVoiceReview, setAwaitingConfirmation, setStatusMessage, setPhase, addChatMessage]);
 
   const listenForReviewCorrections = useCallback(() => {
     if (!conversationActiveRef.current) return;
@@ -2259,14 +2330,15 @@ function useConversationEngine({
         setPhase(PHASE.THINKING);
         const trimmed = heard.trim();
 
-        if (!trimmed) {
+        if (!trimmed || isFillerOnly(trimmed)) {
           speak("I didn't hear anything. Say yes if everything is correct, or say what needs to be changed.", () =>
             listenForReviewCorrections()
           );
           return;
         }
 
-        if (isYesAnswer(trimmed)) {
+        // The final approval is a whole-reply yes (plan 006): "Yes, my surname is Cruz" is a correction.
+        if (isPlainYes(trimmed)) {
           addChatMessage('user', trimmed);
           issueNow();   // asks for any missing answer first instead of saving
           return;
@@ -2343,8 +2415,8 @@ function useConversationEngine({
   // `intro`: said before the spelling prompt when spelling (again).
   const missAndContinue = useCallback((fieldIndex, retry, { counted = null, intro = '' } = {}) => {
     // A step already due (the last spoken try was read back) is taken, never counted again.
-    const due = takeDue(ladderRef.current, attemptKeyOf(addressRef.current, fieldIndex));
-    const next = counted || due || countMissIn(ladderRef.current, addressRef.current, fieldIndex);
+    const due = takeDue(ladderRef.current, attemptKeyOf(addressRef.current, fieldIndex, birthRef.current));
+    const next = counted || due || countMissIn(ladderRef.current, addressRef.current, fieldIndex, birthRef.current);
     if (next === 'skip') {
       skipField(fieldIndex);
       return;

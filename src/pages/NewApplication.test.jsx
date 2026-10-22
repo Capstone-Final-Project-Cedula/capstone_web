@@ -160,7 +160,7 @@ afterEach(() => {
 });
 
 test('repeated silence keeps the answer pending until a spoken yes', async () => {
-  for (let turn = 0; turn < 3; turn += 1) {
+  for (let turn = 0; turn < 2; turn += 1) {
     await reply();
     expect(button('Yes, correct')).toBeDefined();
     expect(container.textContent).not.toContain('Surname: Testname');
@@ -172,6 +172,28 @@ test('repeated silence keeps the answer pending until a spoken yes', async () =>
   expect(button('Yes, correct')).toBeUndefined();
   await act(async () => jest.advanceTimersByTime(150));
   expect(container.textContent).toContain('What is your given name?');
+});
+
+test('3 silences in a row at the yes/no step pause the listening and leave the Yes / No buttons', async () => {
+  for (let turn = 0; turn < 3; turn += 1) {
+    await reply();
+    await finishSpeech();
+  }
+  const listens = recordings.length;
+  await act(async () => jest.advanceTimersByTime(1000));
+  expect(recordings).toHaveLength(listens);
+  expect(container.textContent).toContain('I did not hear a yes or no. Please tap Yes or No below.');
+  expect(button('Yes, correct')).toBeDefined();
+  await act(async () => button('Yes, correct').click());
+  expect(container.textContent).toContain('Surname: Testname');
+});
+
+test('a filler at the yes/no step is not a yes and not a try', async () => {
+  const readBack = audio;
+  await reply('Um.');
+  expect(audio).not.toBe(readBack);   // a new line is spoken ("Please say yes or no."), nothing is accepted
+  expect(container.textContent).not.toContain('Surname: Testname');
+  expect(button('No, say again')).toBeDefined();   // the ladder did not move
 });
 
 test('a spoken no after silence asks for the surname again without saving it', async () => {
@@ -249,6 +271,10 @@ test('the birthplace town keeps waiting after the province has been answered', a
   await listenAtField('Place of birth');
   extractionAPI.understandAnswer.mockResolvedValue({ data: { ok: true, value: 'Sample Province', normalized: '123' } });
   await reply('Sample Province');
+  await finishSpeech();
+  expect(container.textContent).toContain('Sample Province. Is that correct?');   // read back first (plan 006)
+  expect(container.textContent).not.toContain('Which town or city in Sample Province');
+  await reply('Yes');
   await finishSpeech();
   expect(container.textContent).toContain('Which town or city in Sample Province were you born in?');
   extractionAPI.understandAnswer.mockClear();

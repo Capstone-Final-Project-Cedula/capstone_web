@@ -30,3 +30,21 @@ export const isNoAnswer = (value) => {
 
 // A no at the "is that correct?" step, also a longer one ("No, it is Bacus with a C").
 export const isNoReply = (value) => isNoAnswer(value) || new RegExp(`^${FILLER}(no|hindi|mali)\\b`).test(normalizeReply(value));
+
+// A whole-reply yes for the final approval (plan 006): "Yes.", "Opo", "yes po", "okay". At most 3 words and no field
+// name, "change" or "but": "Yes, my surname is Cruz" is a correction, never an approval (isYesAnswer would accept it).
+const PLAIN_YES = /^(yes|yeah|yep|yup|opo|oo|okay|ok|correct|right|sure)( please)?$/;
+const FIELD_WORD = /\b(change|but|no|not|name|surname|birth|address|purok|barangay|sex|civil|status|height|weight|occupation|citizenship|income|male|female|single|married|date)\b/;
+
+export const isPlainYes = (value) => {
+  const reply = normalizeReply(value);
+  return Boolean(reply) && reply.split(' ').length <= 3 && !FIELD_WORD.test(reply) && PLAIN_YES.test(reply) && !looksSpelled(value);
+};
+
+// "Um.", "Uh", "Hmm", "Mm-hmm": a hesitation, never an answer or a yes/no (plan 006).
+const FILLER_ONLY = /^(uh+m*|um+|ah+m*|eh+|er+m*|hm+|mm+|mh+m*)$/;
+
+export const isFillerOnly = (value) => {
+  const words = String(value || '').toLowerCase().match(/[a-zñ']+/g) || [];
+  return words.length > 0 && words.every((w) => FILLER_ONLY.test(w));
+};
