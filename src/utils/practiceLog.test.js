@@ -31,6 +31,22 @@ describe('the voice ladder in the practice log (plan 002.2)', () => {
     expect(finished.accepted_engine).toBe('typed');
   });
 
+  test('an empty turn keeps why it was empty when the answer check adds its own reason (Codex verify)', () => {
+    const rec = createPracticeRecorder();
+    rec.asked('place_of_birth');
+    rec.heard('place_of_birth', { text: '', engine: 'whisper', reason: 'dropped-echo' });
+    rec.parsed('place_of_birth', { ok: false, reason: 'empty', value: '' }, { partial: true });
+    rec.heard('place_of_birth', { text: 'nails', engine: 'whisper' });
+    rec.parsed('place_of_birth', { ok: false, reason: 'not_a_place', value: '' }, { partial: true });
+    rec.skip('place_of_birth');
+    rec.endStep();
+    rec.heard('place_of_birth', { text: 'Malaybalay City, Bukidnon', engine: 'typed' });
+    rec.parsed('place_of_birth', { ok: true, value: 'Malaybalay City, Bukidnon' });
+    const note = rec.accept('place_of_birth', 'Malaybalay City, Bukidnon', 'typed');
+    expect(note.attempt_details.map((a) => a.reason)).toEqual(['dropped-echo', 'not_a_place', null]);
+    expect(note.attempt_details.map((a) => a.stage)).toEqual(['interview', 'interview', 'end_step']);
+  });
+
   test('an optional question left blank at the end is marked, not counted as voice', () => {
     const rec = createPracticeRecorder();
     rec.asked('height');

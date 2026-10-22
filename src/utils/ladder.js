@@ -25,6 +25,19 @@ export const onMiss = (ladder, { canSpell }) => {
   return { ladder: { ...ladder, spoken }, next: 'skip' };
 };
 
+/**
+ * The last spoken try was a new answer at "is that correct?": it is read back for one last yes, and the
+ * step the ladder decided ('spell' or 'skip') is due if that is not a yes. Spelling has not started yet.
+ */
+export const withDue = (ladder, next) => ({ ...ladder, spelling: false, due: next });
+
+/** The step due on this ladder, or null; taken once (Codex verify round 2, plan 002.2: no endless re-answers). */
+export const takeDue = (ladders, key) => {
+  const due = ladders[key]?.due || null;
+  if (due) ladders[key] = { ...ladders[key], due: null };
+  return due;
+};
+
 /** The applicant started spelling on their own (letters at "is that correct?"): spelled tries from now on. */
 export const startSpellingLadder = (ladder) => ({ ...ladder, spelling: true });
 
