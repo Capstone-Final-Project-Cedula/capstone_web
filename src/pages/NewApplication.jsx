@@ -2358,10 +2358,10 @@ function useConversationEngine({
           heardNothing();
           return;
         }
-        resetNonAnswers();
 
         // The final approval is a whole-reply yes (plan 006): "Yes, my surname is Cruz" is a correction.
         if (isPlainYes(trimmed)) {
+          resetNonAnswers();
           addChatMessage('user', trimmed);
           issueNow();   // asks for any missing answer first instead of saving
           return;
@@ -2370,6 +2370,7 @@ function useConversationEngine({
         // "Go back to my address": ask that question again, then come back to this review.
         const nav = parseNavigation(trimmed);
         if (nav) {
+          resetNonAnswers();
           const target = nav.type === 'goto' ? nav.index : INTERVIEW_FIELDS.length - 1;
           addChatMessage('user', trimmed);
           setStep('interview');
@@ -2380,6 +2381,14 @@ function useConversationEngine({
 
         const corrections = parseVoiceCorrections(trimmed);
         if (!corrections.length) {
+          // Only a real reply resets the run: a refusal does, an unrecognized one ("banana") counts like silence.
+          if (isNoAnswer(trimmed)) resetNonAnswers();
+          else if (noteNonAnswer('review') >= NON_ANSWER_LIMIT) {
+            stopBrowserListening();
+            setPhase(PHASE.CONFIRMING);
+            setVoiceError('I did not understand. Please use the buttons on the screen, or press Start Conversation.');
+            return;
+          }
           const msg = isNoAnswer(trimmed)
             ? 'Okay. Tell me what to change, for example: change surname to Cruz.'
             : "I didn't understand the correction. Please say it like this: change surname to Cruz.";
@@ -2387,6 +2396,7 @@ function useConversationEngine({
           return;
         }
 
+        resetNonAnswers();
         // Check each corrected value the same way as during the interview.
         let checked;
         try {
@@ -2962,6 +2972,7 @@ const NewApplication = () => {
     setIsSpeaking(true);
     synthesizeAndPlay(text, {
       audioRef: speechAudioRef,
+      isStale: () => speechSequenceRef.current !== sequence,   // a clip still downloading after a newer line or a stop never plays
       onEnd: () => {
         if (speechSequenceRef.current !== sequence) return;
         setIsSpeaking(false);

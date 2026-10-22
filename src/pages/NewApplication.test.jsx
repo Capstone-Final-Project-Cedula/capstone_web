@@ -665,3 +665,14 @@ describe('non-answers while spelling and at the final approval', () => {
     expect(container.textContent).not.toContain('I did not hear you. Please use the buttons');
   });
 });
+
+test('an unrecognized reply at the final approval counts toward the pause, also mixed with fillers', async () => {
+  await interviewToReview();
+  for (const text of ['banana', 'Um.', 'banana']) {
+    await reply(text);
+    await finishSpeech();
+    await act(async () => jest.advanceTimersByTime(150));
+  }
+  await reply('banana');
+  expect(container.textContent).toContain('I did not understand. Please use the buttons on the screen');
+});
