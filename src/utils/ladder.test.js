@@ -1,4 +1,4 @@
-import { SPELLED_TRIES, SPOKEN_TRIES, newLadder, onMiss, startSpellingLadder } from './ladder';
+import { SPELLED_TRIES, SPOKEN_TRIES, newLadder, noButtonLabel, onMiss, startSpellingLadder } from './ladder';
 
 const run = (misses, canSpell, start = newLadder()) => {
   let ladder = start;
@@ -30,6 +30,14 @@ describe('the voice ladder (plan 002.2)', () => {
   test('spelling started by the applicant uses the spelled tries only', () => {
     const start = startSpellingLadder(onMiss(newLadder(), { canSpell: true }).ladder);
     expect(run(2, true, start).steps).toEqual(['again', 'skip']);
+  });
+
+  test('the No button says what happens next', () => {
+    expect(noButtonLabel(newLadder(), { canSpell: true })).toBe('No, say again');      // names too (plan 002.2)
+    expect(noButtonLabel({ spoken: 2, spelled: 0, spelling: false }, { canSpell: true })).toBe('No, spell it');
+    expect(noButtonLabel({ spoken: 2, spelled: 0, spelling: false }, { canSpell: false })).toBe('No, skip for now');
+    expect(noButtonLabel({ spoken: 3, spelled: 0, spelling: true }, { canSpell: true })).toBe('No, spell it');
+    expect(noButtonLabel({ spoken: 3, spelled: 1, spelling: true }, { canSpell: true })).toBe('No, skip for now');
   });
 
   test('a fresh ladder for a question asked again from the end step', () => {

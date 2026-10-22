@@ -27,3 +27,11 @@ export const onMiss = (ladder, { canSpell }) => {
 
 /** The applicant started spelling on their own (letters at "is that correct?"): spelled tries from now on. */
 export const startSpellingLadder = (ladder) => ({ ...ladder, spelling: true });
+
+/** The "No" button at "is that correct?" says what a no does next. */
+export const noButtonLabel = (ladder, { canSpell }) => {
+  const { next } = onMiss(ladder, { canSpell });
+  if (next === 'skip') return 'No, skip for now';
+  if (next === 'spell' || ladder.spelling) return 'No, spell it';
+  return 'No, say again';
+};
