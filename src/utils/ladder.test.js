@@ -1,4 +1,6 @@
-import { SPELLED_TRIES, SPOKEN_TRIES, newLadder, noButtonLabel, onMiss, startSpellingLadder } from './ladder';
+import {
+  SPELLED_TRIES, SPOKEN_TRIES, newLadder, noButtonLabel, onMiss, startSpellingLadder, takeDue, withDue,
+} from './ladder';
 
 const run = (misses, canSpell, start = newLadder()) => {
   let ladder = start;
@@ -38,6 +40,24 @@ describe('the voice ladder (plan 002.2)', () => {
     expect(noButtonLabel({ spoken: 2, spelled: 0, spelling: false }, { canSpell: false })).toBe('No, skip for now');
     expect(noButtonLabel({ spoken: 3, spelled: 0, spelling: true }, { canSpell: true })).toBe('No, spell it');
     expect(noButtonLabel({ spoken: 3, spelled: 1, spelling: true }, { canSpell: true })).toBe('No, skip for now');
+  });
+
+  test('a new answer on the last spoken try is read back once, then its step is due once (Codex verify round 2)', () => {
+    // Three re-answers at "is that correct?" for a name: the third decides 'spell'.
+    let ladder = newLadder();
+    let next;
+    for (let i = 0; i < 3; i += 1) ({ ladder, next } = onMiss(ladder, { canSpell: true }));
+    expect(next).toBe('spell');
+    const ladders = { 0: withDue(ladder, next) };
+    expect(ladders[0]).toMatchObject({ spoken: 3, spelling: false, due: 'spell' });   // not spelling yet
+    expect(noButtonLabel(ladders[0], { canSpell: true })).toBe('No, spell it');
+    // Any reply but yes takes the due step; it is never taken (or counted) twice.
+    expect(takeDue(ladders, 0)).toBe('spell');
+    expect(takeDue(ladders, 0)).toBeNull();
+    expect(ladders[0].spoken).toBe(3);
+    // A field that cannot be spelled: the last re-answer is read back, then skipped.
+    expect(noButtonLabel(withDue({ spoken: 3, spelled: 0, spelling: false }, 'skip'), { canSpell: false })).toBe('No, skip for now');
+    expect(takeDue({}, 5)).toBeNull();
   });
 
   test('a fresh ladder for a question asked again from the end step', () => {

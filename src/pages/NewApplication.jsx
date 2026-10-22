@@ -34,7 +34,7 @@ import { checkAnswer } from '../utils/answerCheck';
 import {
   BIRTH_IDLE, BIRTH_PROVINCE_STEP, birthQuestion, onBirthNo, onBirthResult, shortcutResult, startBirth,
 } from '../utils/birthPlace';
-import { newLadder, noButtonLabel, onMiss, startSpellingLadder } from '../utils/ladder';
+import { newLadder, noButtonLabel, onMiss, startSpellingLadder, takeDue, withDue } from '../utils/ladder';
 import { COUNTER_LINE, COUNTER_SCREEN_LINE } from '../utils/counterFlow';
 import { validateFormData } from '../utils/requiredFields';
 import {
@@ -1614,17 +1614,22 @@ function useConversationEngine({
           // Letters instead of yes/no: they are spelling it (or adding to their spelling). From now on the
           // spelled tries count. Already spelling: the read-back was wrong, so this is one spelled try
           // (Codex verify, plan 002.2: otherwise new spellings could go on without a limit).
-          if (ladderOf(fieldIndex).spelling) {
-            if (countMissIn(ladderRef.current, addressRef.current, fieldIndex) === 'skip') {
+          // `counted`: this turn's step, so a rejected spelling is not counted a second time.
+          const key = attemptKeyOf(addressRef.current, fieldIndex);
+          const due = takeDue(ladderRef.current, key);
+          let counted = null;
+          if (due || !ladderOf(fieldIndex).spelling) {
+            enterSpelling(fieldIndex);       // the first spelling: a try only if it fails
+          } else {
+            counted = countMissIn(ladderRef.current, addressRef.current, fieldIndex);
+            if (counted === 'skip') {
               spelledRef.current = '';
               skipField(fieldIndex);
               return;
             }
-          } else {
-            enterSpelling(fieldIndex);
           }
           spelledRef.current = combineSpelling(spelledRef.current, reply);
-          finishSpelling(fieldIndex, { heardBy: meta });
+          finishSpelling(fieldIndex, { heardBy: meta, counted });
         } else if (isNoReply(reply)) {
           spelledRef.current = '';
           fixAnswer(fieldIndex);
@@ -1637,10 +1642,17 @@ function useConversationEngine({
           // (it may be right, even on the last try); only if it fails too does the ladder's next step
           // (`counted`: again / spell / skip) happen, without counting the same turn a second time.
           spelledRef.current = '';
-          if (isBirthStepOf(birthRef.current, fieldIndex)) birthRef.current = onBirthNo(birthRef.current).birth;
           const key = attemptKeyOf(addressRef.current, fieldIndex);
+          const due = takeDue(ladderRef.current, key);
+          if (due) {
+            // The last spoken try was already this read-back's answer: its step happens now (no more re-answers).
+            latestRef.current.missAndContinue(fieldIndex, () => {}, { counted: due });
+            return;
+          }
+          if (isBirthStepOf(birthRef.current, fieldIndex)) birthRef.current = onBirthNo(birthRef.current).birth;
           const next = countMissIn(ladderRef.current, addressRef.current, fieldIndex);
-          if (next === 'spell') ladderRef.current[key] = { ...ladderRef.current[key], spelling: false };   // not yet
+          // The last spoken try: still read back once (it may be right); anything but yes then spells or skips.
+          if (next !== 'again') ladderRef.current[key] = withDue(ladderRef.current[key], next);
           handleSpokenAnswer(fieldIndex, reply, {
             shown: true, counted: next, engine: meta.engine, seconds: meta.seconds, spokeEndedAt: meta.spokeEndedAt, cutOffAt: meta.cutOffAt,
           });
@@ -1718,11 +1730,11 @@ function useConversationEngine({
 
   // `typed`: the applicant (or staff) typed the correction on screen, so it is saved
   // without another "is that correct?". `heardBy`: the recorder's meta of spoken letters (timing line).
-  const finishSpelling = useCallback(async (fieldIndex, { typed = '', heardBy = null } = {}) => {
+  const finishSpelling = useCallback(async (fieldIndex, { typed = '', heardBy = null, counted = null } = {}) => {
     const field = INTERVIEW_FIELDS[fieldIndex];
     const letters = (typed || spelledRef.current).trim();
     if (!letters) {
-      if (!typed) latestRef.current.missAndContinue(fieldIndex, () => {}, { intro: 'I did not hear any letters.' });
+      if (!typed) latestRef.current.missAndContinue(fieldIndex, () => {}, { counted, intro: 'I did not hear any letters.' });
       return;
     }
     // Typed text keeps its own capitals ("McArthur") unless it was all one case.
@@ -1752,13 +1764,14 @@ function useConversationEngine({
         return;
       }
       // A failed spelling is one spelled try (plan 002.2), then spell again or skip.
-      latestRef.current.missAndContinue(fieldIndex, () => {}, { intro: `${result.message} Let's spell it again.` });
+      latestRef.current.missAndContinue(fieldIndex, () => {}, { counted, intro: `${result.message} Let's spell it again.` });
       return;
     }
     const checked = !result.methods?.includes('local');   // the backend's list, not the offline check
     if (field.key === 'place_of_birth' && !typed && (!checked || result.warnings?.length)) {
       // Spelled by voice, a place of birth must be a list place (001.8 rule): anything else is a failed try.
       latestRef.current.missAndContinue(fieldIndex, () => {}, {
+        counted,
         intro: `${spelledValue} is not in the list of places. Let's spell it again.`,
       });
       return;
@@ -2299,7 +2312,9 @@ function useConversationEngine({
   // `counted`: the ladder's step was already decided for this turn (a new answer at "is that correct?").
   // `intro`: said before the spelling prompt when spelling (again).
   const missAndContinue = useCallback((fieldIndex, retry, { counted = null, intro = '' } = {}) => {
-    const next = counted || countMissIn(ladderRef.current, addressRef.current, fieldIndex);
+    // A step already due (the last spoken try was read back) is taken, never counted again.
+    const due = takeDue(ladderRef.current, attemptKeyOf(addressRef.current, fieldIndex));
+    const next = counted || due || countMissIn(ladderRef.current, addressRef.current, fieldIndex);
     if (next === 'skip') {
       skipField(fieldIndex);
       return;
