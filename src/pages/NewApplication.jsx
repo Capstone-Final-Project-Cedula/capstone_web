@@ -1090,7 +1090,8 @@ function useWhisperListener() {
       setIsListening(false);
       if (cancelled) return;
       if (!speechStart || lastVoice - speechStart < cfg.minSpeechMs) {
-        onEnd?.('', { engine: 'whisper', reason: 'no-speech' });
+        // Why it was empty, for the practice log (plan 002.2): nothing crossed the threshold, or too short.
+        onEnd?.('', { engine: 'whisper', reason: speechStart ? 'too-short' : 'browser-no-speech' });
         return;
       }
       onTranscribing?.();
@@ -1107,8 +1108,9 @@ function useWhisperListener() {
         });
       } catch (error) {
         if (error.response?.status === 401) return;            // login expired: client redirects
-        if (error.response?.status === 422) {                   // Whisper heard no speech
-          onEnd?.('', { engine: 'whisper', reason: 'no-speech' });
+        if (error.response?.status === 422) {
+          // Whisper heard nothing, or the backend dropped it: whisper-empty / dropped-echo / dropped-repetition.
+          onEnd?.('', { engine: 'whisper', reason: error.response.headers?.['x-empty-reason'] || 'whisper-empty' });
           return;
         }
         onError?.('whisper-failed');
