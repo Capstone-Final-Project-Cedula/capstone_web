@@ -1778,6 +1778,18 @@ function useConversationEngine({
           latestRef.current.missAndContinue(fieldIndex, () => {}, { intro: 'I did not hear any letters.' });
           return;
         }
+        if (isFillerOnly(reply)) {
+          // "Um." while spelling is not a spelled try (plan 006): ask for the letters again; after 3 in a row pause.
+          noted('filler');
+          if (noteNonAnswer(`spell-${fieldIndex}`) >= NON_ANSWER_LIMIT) {
+            stopConversation();
+            setVoiceError('I did not hear any letters. Press Start Conversation to continue, or type it.');
+            return;
+          }
+          speak('I did not hear any letters. Please spell it letter by letter.', () => listenForLetters(fieldIndex));
+          return;
+        }
+        resetNonAnswers();
         addChatMessage('user', reply);
         if (isNoReply(reply) && !looksSpelled(reply)) {
           // "Oh no" while spelling is a refusal, not the letters O, N, O (Codex verify, plan 002.2).
@@ -1795,7 +1807,7 @@ function useConversationEngine({
         finishSpelling(fieldIndex, { heardBy: meta });
       },
     });
-  }, [listenOnce, setDraftAnswer, setPhase, setStatusMessage, addChatMessage, practice]);
+  }, [listenOnce, speak, stopConversation, setVoiceError, setDraftAnswer, setPhase, setStatusMessage, addChatMessage, practice]);
 
   // `typed`: the applicant (or staff) typed the correction on screen, so it is saved
   // without another "is that correct?". `heardBy`: the recorder's meta of spoken letters (timing line).
@@ -2277,6 +2289,7 @@ function useConversationEngine({
     setCurrentFieldIndex(0);
     setPhase(PHASE.CONFIRMING);
     setStatusMessage('Please check the details on the screen.');
+    resetNonAnswers();
     addChatMessage('assistant', REVIEW_PROMPT);
     speak(REVIEW_PROMPT, () => listenForReviewCorrections());
   }, [activateVoice, askMissingField, speak, setMissingView, setStep, setAwaitingConfirmation, setCurrentFieldIndex, setStatusMessage, setPhase, addChatMessage]);
@@ -2312,6 +2325,20 @@ function useConversationEngine({
   const listenForReviewCorrections = useCallback(() => {
     if (!conversationActiveRef.current) return;
 
+    // Silence or "Um." at the final approval is not an answer (plan 006): ask again, but after 3 in a row the
+    // automatic listening pauses and the review page's own buttons are what is left.
+    const heardNothing = () => {
+      if (noteNonAnswer('review') >= NON_ANSWER_LIMIT) {
+        stopBrowserListening();
+        setPhase(PHASE.CONFIRMING);
+        setVoiceError('I did not hear you. Please use the buttons on the screen, or press Start Conversation.');
+        return;
+      }
+      speak("I didn't hear anything. Say yes if everything is correct, or say what needs to be changed.", () =>
+        listenForReviewCorrections()
+      );
+    };
+
     listenOnce({
       fieldKey: 'review',   // Whisper hint
       onStart: () => {
@@ -2320,11 +2347,7 @@ function useConversationEngine({
         setStatusMessage('Listening for corrections or approval...');
       },
       onError: (error) => {
-        if (error === 'no-speech') {
-          speak("I didn't hear anything. Say yes if everything is correct, or say what needs to be changed.", () =>
-            listenForReviewCorrections()
-          );
-        }
+        if (error === 'no-speech') heardNothing();
       },
       onEnd: async (heard) => {
         if (!conversationActiveRef.current) return;
@@ -2332,11 +2355,10 @@ function useConversationEngine({
         const trimmed = heard.trim();
 
         if (!trimmed || isFillerOnly(trimmed)) {
-          speak("I didn't hear anything. Say yes if everything is correct, or say what needs to be changed.", () =>
-            listenForReviewCorrections()
-          );
+          heardNothing();
           return;
         }
+        resetNonAnswers();
 
         // The final approval is a whole-reply yes (plan 006): "Yes, my surname is Cruz" is a correction.
         if (isPlainYes(trimmed)) {
@@ -2409,7 +2431,7 @@ function useConversationEngine({
         );
       },
     });
-  }, [listenOnce, speak, issueNow, setAnswers, setStatusMessage, setPhase, addChatMessage]);
+  }, [listenOnce, speak, issueNow, stopBrowserListening, setVoiceError, setAnswers, setStatusMessage, setPhase, addChatMessage]);
 
   // After a try without an accepted answer (plan 002.2): ask again (`retry`), spell, or skip.
   // `counted`: the ladder's step was already decided for this turn (a new answer at "is that correct?").

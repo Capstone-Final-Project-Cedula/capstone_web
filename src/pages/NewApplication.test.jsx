@@ -612,3 +612,56 @@ describe('final approval', () => {
     expect(container.textContent).not.toContain('Checking your details');
   });
 });
+
+// ── Codex verify, round 1: every non-answer path is bounded and is not a try ─────────────────
+describe('non-answers while spelling and at the final approval', () => {
+  test('"Um." while spelling the place of birth is not a spelled try; 3 in a row pause the listening', async () => {
+    await listenAtField('Place of birth');
+    failEverything();
+    await failedSpoken(3);                     // the spoken tries are used up: spelling starts
+    await finishSpeech();
+    await finishSpeech();
+    const calls = countCalls();
+    for (let turn = 0; turn < 2; turn += 1) {
+      await reply('Um.');
+      await finishSpeech();
+      await act(async () => jest.advanceTimersByTime(150));
+    }
+    expect(container.textContent).not.toContain("Let's skip your place of birth");
+    expect(countCalls()).toBe(calls);          // no answer check, no try
+    await reply('Um.');
+    expect(container.textContent).toContain('I did not hear any letters. Press Start Conversation');
+    expect(container.textContent).not.toContain("Let's skip your place of birth");
+    expect(button('Start Conversation')).toBeDefined();
+  });
+
+  test('3 fillers in a row at the final approval stop the automatic listening', async () => {
+    await interviewToReview();
+    const listens = () => recordings.length;
+    for (let turn = 0; turn < 2; turn += 1) {
+      await reply('Um.');
+      await finishSpeech();
+      await act(async () => jest.advanceTimersByTime(150));
+    }
+    await reply('Um.');
+    const after = listens();
+    await finishSpeech();
+    await act(async () => jest.advanceTimersByTime(1000));
+    expect(listens()).toBe(after);             // no 4th listening turn
+    expect(container.textContent).toContain('I did not hear you. Please use the buttons on the screen');
+  });
+
+  test('a real reply resets the run: two fillers, a correction, then fillers start counting again', async () => {
+    await interviewToReview();
+    for (let turn = 0; turn < 2; turn += 1) {
+      await reply('Um.');
+      await finishSpeech();
+      await act(async () => jest.advanceTimersByTime(150));
+    }
+    await reply('Yes, my surname is Cruz');
+    await finishSpeech();
+    await finishSpeech();
+    await reply('Um.');
+    expect(container.textContent).not.toContain('I did not hear you. Please use the buttons');
+  });
+});
