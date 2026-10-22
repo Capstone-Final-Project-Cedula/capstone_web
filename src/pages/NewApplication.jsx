@@ -27,6 +27,7 @@ import { getApiErrorMessage } from '../api/errors';
 import LoadingSpinner from '../components/common/LoadingSpinner';
 import SusSurveyDialog from '../components/sus/SusSurveyDialog';
 import ConsentNotice from '../components/interview/ConsentNotice';
+import AnswerPicker from '../components/interview/AnswerPicker';
 import { combineSpelling, looksSpelled, titleCaseSpelled } from '../utils/spelling';
 import { isNoAnswer, isNoReply, isYesAnswer, normalizeReply } from '../utils/replies';
 import { ADDRESS_PARTS, addressTownOf, joinAddress } from '../utils/address';
@@ -42,6 +43,7 @@ import {
   missingRequiredIndexes as missingRequiredIn, parseMissingChoice,
 } from '../utils/endStep';
 import { createPracticeRecorder, createPracticeSession } from '../utils/practiceLog';
+import { pickedCodes, pickerKind } from '../utils/pickers';
 import { Keyboard, Mic } from 'lucide-react';
 import Button from '../components/ui/Button';
 import Badge from '../components/ui/Badge';
@@ -1149,6 +1151,7 @@ function useConversationEngine({
   setMissingView,
   setAddressPart,
   practice,   // temporary practice log (plan 001.7): { session, rec }
+  notePick,   // plan 002.1: (key, value, meta) a value picked from a list, for its code at issue
 }) {
   const { isSpeaking, speak: rawSpeak, cancel: cancelSpeech } = useSpeechSynthesis();
   const browser = useBrowserSpeechRecognition();
@@ -2064,7 +2067,7 @@ function useConversationEngine({
   }, [setMissingView, addChatMessage, practice]);
 
   // A typed answer is checked by the same /api/extraction rules as a spoken one.
-  const submitMissingTyped = useCallback(async (fieldIndex, text) => {
+  const submitMissingTyped = useCallback(async (fieldIndex, text, meta = {}) => {
     const field = INTERVIEW_FIELDS[fieldIndex];
     const typed = String(text || '').trim();
     if (!typed) return;
@@ -2093,6 +2096,7 @@ function useConversationEngine({
     practice.rec.heard(field.key, { text: typed, engine: 'typed' });
     practice.rec.parsed(field.key, result);
     practice.session.note(practice.rec.accept(field.key, value, 'typed'));
+    notePick(field.key, typed, meta);   // its list code goes to /forms/issue only while the answer is still this
     saveSpokenAnswer(fieldIndex, value);
     resetLadder(fieldIndex);
     skippedRef.current.delete(fieldIndex);
@@ -2100,14 +2104,14 @@ function useConversationEngine({
     pendingMissingRef.current = null;
     setMissingView(null);
     latestRef.current.startVoiceReview();
-  }, [speak, saveSpokenAnswer, setMissingView, addChatMessage, practice]);
+  }, [speak, saveSpokenAnswer, setMissingView, addChatMessage, practice, notePick]);
 
   // The Type it / Say it again buttons and the text box. A tap ends the voice turn in progress.
-  const tapMissing = useCallback((choice, typedValue = '') => {
+  const tapMissing = useCallback((choice, typedValue = '', meta = {}) => {
     const fieldIndex = pendingMissingRef.current;
     if (fieldIndex === null || !conversationActiveRef.current) return;
     if (choice === 'typed') {
-      submitMissingTyped(fieldIndex, typedValue);
+      submitMissingTyped(fieldIndex, typedValue, meta);
       return;
     }
     missingTurnRef.current += 1;
@@ -2346,15 +2350,16 @@ const IssuingOverlay = ({ message }) => createPortal(
  */
 const MissingFieldPanel = ({ view, onType, onSay, onTyped, onBlank }) => {
   const [typed, setTyped] = useState('');
+  const [picked, setPicked] = useState({});   // the list code of a picked place or town (plan 002.1)
   const inputRef = useRef(null);
-  useEffect(() => { setTyped(''); }, [view.key]);
+  useEffect(() => { setTyped(''); setPicked({}); }, [view.key]);
   useEffect(() => {
     if (view.mode === 'typing') inputRef.current?.focus();
   }, [view.mode, view.key]);
 
   const submit = (e) => {
     e.preventDefault();
-    if (typed.trim() && !view.checking) onTyped(typed);
+    if (typed.trim() && !view.checking) onTyped(typed, picked);
   };
 
   return (
@@ -2389,16 +2394,28 @@ const MissingFieldPanel = ({ view, onType, onSay, onTyped, onBlank }) => {
 
       {view.mode === 'typing' && (
         <form onSubmit={submit} className="mt-4 space-y-3">
-          <Input
-            ref={inputRef}
-            label={`Type your ${view.label.toLowerCase()}`}
-            value={typed}
-            onChange={(e) => setTyped(e.target.value)}
-            placeholder={view.hint}
-            error={view.error}
-            required
-            autoComplete="off"
-          />
+          {pickerKind(view.key) === 'text' ? (
+            <Input
+              ref={inputRef}
+              label={`Type your ${view.label.toLowerCase()}`}
+              value={typed}
+              onChange={(e) => setTyped(e.target.value)}
+              placeholder={view.hint}
+              error={view.error}
+              required
+              autoComplete="off"
+            />
+          ) : (
+            // Plan 002.1: pick it (buttons, a date, a place from the list) instead of typing it out.
+            <AnswerPicker
+              fieldKey={view.key}
+              value={typed}
+              onChange={(text, meta) => { setTyped(text); setPicked(meta || {}); }}
+              label={`Your ${view.label.toLowerCase()}`}
+              error={view.error}
+              autoFocus
+            />
+          )}
           <div className="flex flex-col gap-2 sm:flex-row">
             <Button type="submit" size="lg" loading={view.checking} disabled={!typed.trim() || view.checking}>
               Save answer
@@ -2611,7 +2628,7 @@ const ChatBubble = React.memo(({ role, text, isLatest }) => {
 ChatBubble.displayName = 'ChatBubble';
 
 /** Conversational summary row used on the review / voice-review screens. */
-const SummaryRow = React.memo(({ label, value, onChange, onAskAgain, highlighted, error }) => (
+const SummaryRow = React.memo(({ label, value, onChange, onAskAgain, highlighted, error, fieldKey }) => (
   <div
     className={`rounded-xl border p-3.5 transition-colors ${
       error
@@ -2636,7 +2653,12 @@ const SummaryRow = React.memo(({ label, value, onChange, onAskAgain, highlighted
         )}
       </div>
     </div>
-    {onChange ? (
+    {onChange && pickerKind(fieldKey) !== 'text' ? (
+      // Plan 002.1: the same pickers as the end step and manual mode.
+      <div className="mt-1.5 min-w-0">
+        <AnswerPicker fieldKey={fieldKey} value={value || ''} label={label} hideLabel onChange={onChange} />
+      </div>
+    ) : onChange ? (
       <input
         value={value || ''}
         onChange={(e) => onChange(e.target.value)}
@@ -2701,6 +2723,9 @@ const NewApplication = () => {
   const speechAudioRef = useRef(null);
   const speechSequenceRef = useRef(0);
   // Temporary practice log (plan 001.7): the session and the note builder live as long as the page.
+  // Plan 002.1: values picked from a list, { key: { value, meta } }; their codes go with /forms/issue.
+  const pickedRef = useRef({});
+  const notePick = useCallback((key, value, meta = {}) => { pickedRef.current[key] = { value, meta }; }, []);
   const practiceRef = useRef(null);
   if (!practiceRef.current) {
     practiceRef.current = {
@@ -3089,7 +3114,8 @@ const NewApplication = () => {
     }
 
     try {
-      const formData = buildApplicantData(checkedAnswers);
+      // A list pick's code is sent only while the answer is still that pick (plan 002.1).
+      const formData = { ...buildApplicantData(checkedAnswers), ...pickedCodes(checkedAnswers, pickedRef.current) };
       const validationErrors = validateFormData(formData);
       if (validationErrors.length > 0) {
         toast.error(`Validation errors:\n${validationErrors.join('\n')}`);
@@ -3161,6 +3187,7 @@ const NewApplication = () => {
   const resetInterview = useCallback(() => {
     practice.session.finish();   // no-op when the CTC was issued
     practice.rec.reset();
+    pickedRef.current = {};
     setStep('interview');
     setCurrentFieldIndex(0);
     setAnswers({});
@@ -3206,6 +3233,7 @@ const NewApplication = () => {
     setMissingView,
     setAddressPart,
     practice,
+    notePick,
   });
 
   // What the question card shows: during the voice interview the address is asked in 3 parts, the
@@ -3310,7 +3338,7 @@ const NewApplication = () => {
               view={missingView}
               onType={() => tapMissing('type')}
               onSay={() => tapMissing('say')}
-              onTyped={(text) => tapMissing('typed', text)}
+              onTyped={(text, meta) => tapMissing('typed', text, meta)}
               onBlank={() => tapMissing('blank')}
             />
           )}
@@ -3423,19 +3451,22 @@ const NewApplication = () => {
         </div>
 
         <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-          {INTERVIEW_FIELDS.map((field, index) => (
+          {INTERVIEW_FIELDS.map((field, index) => (field.key === 'icr_no' && isFilipino(answers) ? null : (
+            // The ICR number is only for a citizenship other than Filipino (plan 002.1).
             <SummaryRow
               key={field.key}
+              fieldKey={field.key}
               label={field.label}
               value={answers[field.key]}
-              onChange={(value) => {
+              onChange={(value, meta) => {
                 setInputMethod('manual');
                 updateReviewField(field.key, value);
+                notePick(field.key, value, meta);
               }}
               onAskAgain={() => goToField(index)}
               error={reviewErrors[field.key]}
             />
-          ))}
+          )))}
         </div>
 
         {!canReview && (
@@ -3587,25 +3618,43 @@ const NewApplication = () => {
 
           {/* Input Area */}
           <div className="p-5">
-            <label className="mb-2 block text-sm font-medium text-gray-700" htmlFor="answer-input">
-              {askedField.label}
-            </label>
-            <textarea
-              id="answer-input"
-              ref={inputRef}
-              value={draftAnswer}
-              onChange={(e) => {
-                setInputMethod('manual');
-                setDraftAnswer(e.target.value);
-                if (fieldError) setFieldError('');
-              }}
-              rows={4}
-              placeholder={askedField.hint}
-              className={`input-field resize-none text-base w-full ${fieldError ? '!border-rose-400' : ''}`}
-              aria-label={`Answer for ${askedField.label}`}
-              aria-invalid={Boolean(fieldError)}
-              disabled={isConversationActive}
-            />
+            {!isConversationActive && pickerKind(askedField.key) !== 'text' ? (
+              // Plan 002.1: a fixed set, a date, a number or a place is picked, not typed out.
+              <AnswerPicker
+                key={askedField.key}
+                fieldKey={askedField.key}
+                value={draftAnswer}
+                label={askedField.label}
+                onChange={(text, meta) => {
+                  setInputMethod('manual');
+                  setDraftAnswer(text);
+                  notePick(askedField.key, text, meta);
+                  if (fieldError) setFieldError('');
+                }}
+              />
+            ) : (
+              <>
+                <label className="mb-2 block text-sm font-medium text-gray-700" htmlFor="answer-input">
+                  {askedField.label}
+                </label>
+                <textarea
+                  id="answer-input"
+                  ref={inputRef}
+                  value={draftAnswer}
+                  onChange={(e) => {
+                    setInputMethod('manual');
+                    setDraftAnswer(e.target.value);
+                    if (fieldError) setFieldError('');
+                  }}
+                  rows={4}
+                  placeholder={askedField.hint}
+                  className={`input-field resize-none text-base w-full ${fieldError ? '!border-rose-400' : ''}`}
+                  aria-label={`Answer for ${askedField.label}`}
+                  aria-invalid={Boolean(fieldError)}
+                  disabled={isConversationActive}
+                />
+              </>
+            )}
             {fieldError && (
               <p className="mt-2 text-sm font-medium text-rose-700 flex items-start gap-1.5" role="alert">
                 <FaExclamationTriangle className="shrink-0 mt-0.5" size={13} /> {fieldError}

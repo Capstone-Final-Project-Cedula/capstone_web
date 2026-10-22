@@ -19,25 +19,16 @@ import { formsAPI } from '../api/forms';
 import { getApiErrorMessage } from '../api/errors';
 import Card from '../components/ui/Card';
 import Button from '../components/ui/Button';
-import Input from '../components/ui/Input';
 import Badge from '../components/ui/Badge';
+import AnswerPicker from '../components/interview/AnswerPicker';
 import SusSurveyDialog from '../components/sus/SusSurveyDialog';
 import { COUNTER_LINE } from '../utils/counterFlow';
-import {
-  REQUIRED_FIELDS,
-  SEX_OPTIONS,
-  CIVIL_STATUS_OPTIONS,
-  isValidIsoDate,
-  missingRequiredFields,
-} from '../utils/requiredFields';
+import { REQUIRED_FIELDS, missingRequiredFields } from '../utils/requiredFields';
 
-// Today as YYYY-MM-DD on this computer's clock (toISOString would be UTC, a day behind
-// in the Philippines from 00:00 to 08:00).
-const localTodayIso = () => {
-  const now = new Date();
-  const pad = (n) => String(n).padStart(2, '0');
-  return `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
-};
+// Sent with /forms/issue when a value was picked from a list (plan 002.1); never shown as a field.
+const PICK_CODE_KEYS = new Set(['place_of_birth_code', 'address_town_code', 'address_barangay']);
+const labelOf = (key) => REQUIRED_FIELDS.find((item) => item.key === key)?.label || key.replace(/_/g, ' ');
+const isFilipino = (value) => !value || /^filipino$/i.test(String(value).trim());
 
 const QRScan = () => {
   const [isLoading, setIsLoading] = useState(false);
@@ -55,14 +46,33 @@ const QRScan = () => {
   // A field the server refused stays blocking until it is edited (updateField clears it),
   // even if the web's own check thinks it is filled.
   const canIssue = Object.keys(missing).length === 0 && Object.keys(serverErrors).length === 0;
-  // Every key the phone sent, plus any required field it left out entirely.
+  // Every key the phone sent, plus any required field it left out entirely. The ICR number only for a
+  // citizenship other than Filipino (plan 002.1).
   const fieldKeys = [
     ...Object.keys(formData),
     ...REQUIRED_FIELDS.map(({ key }) => key).filter((key) => !(key in formData)),
-  ];
+  ].filter((key) => !PICK_CODE_KEYS.has(key)
+    && !(key === 'icr_number' && isFilipino(formData.citizenship) && !formData.icr_number));
 
-  const updateField = (key, value) => {
-    setScannedData((prev) => ({ ...prev, form_data: { ...prev.form_data, [key]: value } }));
+  // `meta`: a list pick's code (plan 002.1), sent with /forms/issue; typing the value instead drops it.
+  const updateField = (key, value, meta = {}) => {
+    setScannedData((prev) => {
+      const next = { ...prev.form_data, [key]: value };
+      if (key === 'place_of_birth') {
+        if (meta.code) next.place_of_birth_code = meta.code;
+        else delete next.place_of_birth_code;
+      }
+      if (key === 'address') {
+        if (meta.townCode) {
+          next.address_town_code = meta.townCode;
+          next.address_barangay = meta.barangay || null;
+        } else {
+          delete next.address_town_code;
+          delete next.address_barangay;
+        }
+      }
+      return { ...prev, form_data: next };
+    });
     setServerErrors((prev) => {
       const { [key]: _cleared, ...rest } = prev;
       return rest;
@@ -112,16 +122,16 @@ const QRScan = () => {
       setSurveyTransactionId(result.data.id);
     } catch (error) {
       console.error('Error issuing form:', error);
-      // The scanned data stays on screen. A 422 names the fields to fix: open them for editing.
+      // The scanned data stays on screen. A 422 names the fields to fix (a blank required one, a height
+      // out of range, a place that is not the one picked): open them for editing.
       const detail = error.response?.data?.detail;
       const named = Array.isArray(detail)
-        ? detail.filter((item) => item.loc?.[1] === 'applicant_data'
-            && REQUIRED_FIELDS.some(({ key }) => key === item.loc?.[2]))
+        ? detail.filter((item) => item.loc?.[1] === 'applicant_data' && item.loc?.[2])
         : [];
       if (named.length) {
         setOpenFields((prev) => Array.from(new Set([...prev, ...named.map((item) => item.loc[2])])));
         setServerErrors(Object.fromEntries(named.map((item) => [item.loc[2], item.msg])));
-        toast.error('Some required details are missing. Fill in the highlighted fields, then issue again.');
+        toast.error('Some details need a fix. Correct the highlighted fields, then issue again.');
       } else {
         toast.error(getApiErrorMessage(error, 'Error issuing CTC. Please try again.'));
       }
@@ -146,69 +156,30 @@ const QRScan = () => {
     setShowScanner(false);
   };
 
-  const renderFieldInput = (key) => {
-    const field = REQUIRED_FIELDS.find((item) => item.key === key);
-    const value = formData[key];
-    const inputId = `qr-field-${key}`;
-    const error = serverErrors[key];
-    const selectClass = [
-      'focusable w-full h-11 px-3.5 border rounded-[var(--radius-md)] text-[15px] bg-white outline-none',
-      'transition-all duration-150 focus:border-[var(--color-primary)] focus:shadow-[var(--shadow-focus)]',
-      error ? 'border-[var(--color-error)]' : 'border-[var(--color-neutral-200)]',
-    ].join(' ');
-
-    let control;
-    if (key === 'sex' || key === 'civil_status') {
-      const options = key === 'sex' ? SEX_OPTIONS : CIVIL_STATUS_OPTIONS;
-      control = (
-        <>
-          <select
-            id={inputId}
-            value={options.includes(value) ? value : ''}
-            onChange={(e) => updateField(key, e.target.value)}
-            aria-invalid={Boolean(error) || undefined}
-            className={selectClass}
-          >
-            <option value="">Select…</option>
-            {options.map((option) => <option key={option} value={option}>{option}</option>)}
-          </select>
-          {error && <p className="mt-1.5 text-xs font-medium text-[var(--color-error)] break-words">{error}</p>}
-        </>
-      );
-    } else {
-      control = (
-        <Input
-          id={inputId}
-          type={key === 'date_of_birth' ? 'date' : 'text'}
-          value={key === 'date_of_birth' ? (isValidIsoDate(value) ? value : '') : (value ?? '')}
-          onChange={(e) => updateField(key, e.target.value)}
-          max={key === 'date_of_birth' ? localTodayIso() : undefined}
-          error={error}
-          autoComplete="off"
-        />
-      );
-    }
-
-    return (
-      <div
-        key={key}
-        className="p-3.5 bg-[var(--color-neutral-50)] rounded-[var(--radius-md)] border border-[var(--color-neutral-100)] min-w-0"
-      >
-        <div className="mb-1.5 flex flex-wrap items-center justify-between gap-2">
-          <label
-            htmlFor={inputId}
-            className="block text-xs font-semibold uppercase tracking-wide text-[var(--color-neutral-500)]"
-          >
-            {field ? field.label : key.replace(/_/g, ' ')}
-          </label>
-          {missing[key] && (
-            <Badge tone="warning" icon={AlertTriangle}>Needed before issuing</Badge>
-          )}
-        </div>
-        {control}
+  // An open field (blank, refused by the server, or opened with "Change"): the same pickers as the
+  // interview (plan 002.1). The phone sends the birth date as YYYY-MM-DD.
+  const renderFieldInput = (key) => (
+    <div
+      key={key}
+      className="p-3.5 bg-[var(--color-neutral-50)] rounded-[var(--radius-md)] border border-[var(--color-neutral-100)] min-w-0"
+    >
+      <div className="mb-1.5 flex flex-wrap items-center justify-between gap-2">
+        <p className="text-xs font-semibold uppercase tracking-wide text-[var(--color-neutral-500)]">{labelOf(key)}</p>
+        {missing[key] && (
+          <Badge tone="warning" icon={AlertTriangle}>Needed before issuing</Badge>
+        )}
       </div>
-    );
-  };
+      <AnswerPicker
+        fieldKey={key}
+        value={formData[key] ?? ''}
+        label={labelOf(key)}
+        hideLabel
+        dateFormat="iso"
+        error={serverErrors[key]}
+        onChange={(text, meta) => updateField(key, text, meta)}
+      />
+    </div>
+  );
 
   const scanSteps = [
     {
@@ -352,9 +323,21 @@ const QRScan = () => {
                     key={key}
                     className="p-3.5 bg-[var(--color-neutral-50)] rounded-[var(--radius-md)] border border-[var(--color-neutral-100)] min-w-0"
                   >
-                    <p className="text-xs font-semibold uppercase tracking-wide text-[var(--color-neutral-500)] mb-1">
-                      {key.replace(/_/g, ' ')}
-                    </p>
+                    <div className="mb-1 flex items-center justify-between gap-2">
+                      <p className="min-w-0 text-xs font-semibold uppercase tracking-wide text-[var(--color-neutral-500)]">
+                        {labelOf(key)}
+                      </p>
+                      {/* Plan 002.1: any field can be corrected before issuing, not only a blank required one. */}
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="min-h-[2.75rem] shrink-0"
+                        aria-label={`Change ${labelOf(key)}`}
+                        onClick={() => setOpenFields((prev) => [...prev, key])}
+                      >
+                        Change
+                      </Button>
+                    </div>
                     <p className="text-[15px] font-medium text-[var(--color-neutral-800)] break-words">
                       {formData[key] || '-'}
                     </p>
