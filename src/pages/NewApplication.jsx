@@ -623,7 +623,7 @@ const fetchSpeech = (text) => {
 /** Start generating a line in the background; it plays instantly when needed. */
 const prefetchSpeech = (...texts) => texts.forEach((t) => fetchSpeech(t).catch(() => {}));
 
-const synthesizeAndPlay = async (text, { onStart, onEnd, audioRef, isStale } = {}) => {
+export const synthesizeAndPlay = async (text, { onStart, onEnd, audioRef, isStale } = {}) => {
   const spoken = String(text || '').trim();
   if (!spoken) {
     onEnd?.();
@@ -868,7 +868,7 @@ const parseVoiceCorrections = (transcript) => {
  * Edge neural TTS voice via synthesizeAndPlay(), falling back to the
  * browser's built-in speechSynthesis only if that call fails.
  */
-function useSpeechSynthesis() {
+export function useSpeechSynthesis() {
   const [isSpeaking, setIsSpeaking] = useState(false);
   const audioRef = useRef(null);
   const speechSequenceRef = useRef(0);
@@ -1633,12 +1633,13 @@ function useConversationEngine({
     latestRef.current.missAndContinue(fieldIndex, () => {
       clearConfirmView();
       // The question as the step is now (a forgotten pending town asks the province again).
-      const label = askedOf(addressRef.current, birthRef.current, fieldIndex).label;
-      const msg = `Okay. Please say your ${label.toLowerCase().replace(/\s*\(.*\)/, '')} again.`;
+      const asked = askedOf(addressRef.current, birthRef.current, fieldIndex);
+      if (birthStep) setAddressPart(asked);   // the screen shows the step's own question again
+      const msg = `Okay. Please say your ${asked.label.toLowerCase().replace(/\s*\(.*\)/, '')} again.`;
       addChatMessage('assistant', msg);
       speak(msg, () => listenForAnswer(fieldIndex));
     });
-  }, [speak, clearConfirmView, addChatMessage]);
+  }, [speak, clearConfirmView, setAddressPart, addChatMessage]);
 
   const listenForConfirmation = useCallback((fieldIndex, result) => {
     const turn = confirmTurnRef.current;
@@ -2306,7 +2307,7 @@ function useConversationEngine({
     // 'issued' (survey and counter line next), 'review' (moved to the manual review page,
     // which was said aloud) or 'auth' (login expired): the conversation is over.
     endConversation();
-  }, [speak, speakNext, endConversation, startVoiceReview, setAwaitingConfirmation, setStatusMessage, setPhase, addChatMessage]);
+  }, [speakNext, endConversation, startVoiceReview, setAwaitingConfirmation, setStatusMessage, setPhase, addChatMessage]);
 
   const listenForReviewCorrections = useCallback(() => {
     if (!conversationActiveRef.current) return;
