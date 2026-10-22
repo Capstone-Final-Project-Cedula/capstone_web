@@ -37,6 +37,10 @@ import {
 import { newLadder, noButtonLabel, onMiss, startSpellingLadder } from '../utils/ladder';
 import { COUNTER_LINE, COUNTER_SCREEN_LINE } from '../utils/counterFlow';
 import { validateFormData } from '../utils/requiredFields';
+import {
+  REQUIRED_INTERVIEW_KEYS, endStepIndexes as endStepIndexesIn, isRequiredKey,
+  missingRequiredIndexes as missingRequiredIn, parseMissingChoice,
+} from '../utils/endStep';
 import { createPracticeRecorder, createPracticeSession } from '../utils/practiceLog';
 import { Keyboard, Mic } from 'lucide-react';
 import Button from '../components/ui/Button';
@@ -137,9 +141,9 @@ const INTERVIEW_FIELDS = [
   },
 ];
 
-const REQUIRED_KEYS = INTERVIEW_FIELDS
-  .filter((f) => !f.optional)
-  .map((f) => f.key);
+// The 6 fields a CTC cannot be issued without (the backend's 422 rule), as interview keys. Plan 002.2:
+// only these block the final "yes"; any other question can be left blank.
+const REQUIRED_KEYS = REQUIRED_INTERVIEW_KEYS;
 
 const FIELD_MAP = Object.fromEntries(INTERVIEW_FIELDS.map((f) => [f.key, f]));
 
@@ -166,22 +170,13 @@ const SAVING_LINE = 'Saving your application, please wait.';
 const isBlank = (value) => !String(value ?? '').trim();
 
 // Required questions still blank (e.g. skipped after too many tries), in interview order.
-const missingRequiredIndexes = (answers) =>
-  INTERVIEW_FIELDS
-    .map((field, index) => ({ field, index }))
-    .filter(({ field }) => REQUIRED_KEYS.includes(field.key) && isBlank(answers?.[field.key]))
-    .map(({ index }) => index);
+const missingRequiredIndexes = (answers) => missingRequiredIn(INTERVIEW_FIELDS, answers);
+
+// The end step (plan 002.2, utils/endStep.js): every skipped question still blank, plus any required one.
+const endStepIndexes = (answers, skipped) => endStepIndexesIn(INTERVIEW_FIELDS, answers, skipped);
 
 // "Height (cm)" -> "height", for speech.
 const spokenLabel = (field) => field.label.toLowerCase().replace(/\s*\(.*\)/, '');
-
-// Reply to "Would you like to type it or say it again?". "type" wins when both are heard.
-const parseMissingChoice = (reply) => {
-  const t = String(reply || '').toLowerCase();
-  if (/\b(type|typed|typing|tayp|i-?type|keyboard|write|isulat|sulat)\b/.test(t)) return 'type';
-  if (/\b(say|said|speak|again|repeat|voice|ulit|usab|isulti|sabihin)\b/.test(t)) return 'say';
-  return null;
-};
 
 // Answers that can be spelled letter by letter when they were heard wrong.
 // (Dates, numbers and choices are simply asked again instead.)
@@ -1313,6 +1308,13 @@ function useConversationEngine({
   };
   // The questions skipped during the interview, asked again at the end (plan 002.2).
   const skippedRef = useRef(new Set());
+  // "2 of 3 still needed": the most questions the end step listed since it began.
+  const endStepTotalRef = useRef(0);
+  const endStepCount = () => {
+    const left = endStepIndexes(answersRef.current, skippedRef.current).length;
+    endStepTotalRef.current = Math.max(endStepTotalRef.current, left);
+    return { left, total: endStepTotalRef.current };
+  };
 
   // The on-screen confirmation panel (see confirmAnswer).
   const confirmTurnRef = useRef(0);        // a tap ends the voice turn in progress
@@ -1933,6 +1935,7 @@ function useConversationEngine({
     if (!alreadyAnswered && startIndex === 0) {
       ladderRef.current = {};             // a new applicant: fresh tries, nothing skipped yet
       skippedRef.current = new Set();
+      endStepTotalRef.current = 0;
       setPhase(PHASE.GREETING);
       setStatusMessage('Greeting applicant...');
       addChatMessage('assistant', greeting);
@@ -1948,11 +1951,13 @@ function useConversationEngine({
     }
   }, [activateVoice, speak, askQuestion, setStatusMessage, setPhase, addChatMessage]);
 
-  // ── Missing answers, before the final "yes" (plan 001.3) ──
-  // Each required question still blank is offered again, in interview order:
-  // "I still need your address. Would you like to type it or say it again?"
+  // ── The end step, before the final "yes" (plan 001.3, widened by plan 002.2) ──
+  // Every skipped question (required or not) and any required one still blank, in interview order:
+  // "I still need your height. Would you like to say it or type it?" A question outside the 6 required
+  // ones can also be left blank.
   const askMissingField = useCallback((fieldIndex) => {
     const field = INTERVIEW_FIELDS[fieldIndex];
+    const optional = !isRequiredKey(field.key);
     practice.rec.endStep();   // practice log (plan 002.2): tries from here on are "finished at the end step"
     missingTurnRef.current += 1;
     pendingMissingRef.current = fieldIndex;
@@ -1960,10 +1965,13 @@ function useConversationEngine({
     setStep('voice-review');
     setAwaitingConfirmation(false);
     setCurrentFieldIndex(fieldIndex);
-    setMissingView({ key: field.key, label: field.label, hint: field.hint, mode: 'choice', allowSay: true, error: '', checking: false });
+    setMissingView({
+      key: field.key, label: field.label, hint: field.hint, mode: 'choice', allowSay: true, optional, ...endStepCount(),
+      error: '', checking: false,
+    });
     setPhase(PHASE.CONFIRMING);
-    setStatusMessage(`Still needed: ${field.label}. Type it or say it again.`);
-    const prompt = `I still need your ${spokenLabel(field)}. Would you like to type it or say it again?`;
+    setStatusMessage(`Still needed: ${field.label}. Say it or type it.`);
+    const prompt = `I still need your ${spokenLabel(field)}. Would you like to say it or type it?${optional ? ' You can also leave it blank.' : ''}`;
     addChatMessage('assistant', prompt);
     speak(prompt, () => latestRef.current.listenForMissingChoice(fieldIndex));
   }, [speak, clearConfirmView, setStep, setAwaitingConfirmation, setCurrentFieldIndex, setMissingView, setPhase, setStatusMessage, addChatMessage, practice]);
@@ -1980,7 +1988,10 @@ function useConversationEngine({
     setStep('voice-review');
     setAwaitingConfirmation(false);
     setCurrentFieldIndex(fieldIndex);
-    setMissingView({ key: field.key, label: field.label, hint: field.hint, mode: 'typing', allowSay: !auto, error: '', checking: false });
+    setMissingView({
+      key: field.key, label: field.label, hint: field.hint, mode: 'typing', allowSay: !auto, optional: !isRequiredKey(field.key),
+      ...endStepCount(), error: '', checking: false,
+    });
     setPhase(PHASE.CONFIRMING);
     setStatusMessage(`Type your ${spokenLabel(field)} in the box.`);
     const msg = auto
@@ -2011,7 +2022,7 @@ function useConversationEngine({
       vad: { noSpeechMs: 6000, silenceMs: 700 },
       onStart: () => {
         setPhase(PHASE.LISTENING);
-        setStatusMessage('Listening: say "type" or "say it again"...');
+        setStatusMessage('Listening: say "say it" or "type it"...');
       },
       onError: () => {},
       onEnd: (heard) => {
@@ -2019,17 +2030,36 @@ function useConversationEngine({
         const reply = heard.trim();
         if (reply) addChatMessage('user', reply);
         const choice = parseMissingChoice(reply);
+        const optional = !isRequiredKey(INTERVIEW_FIELDS[fieldIndex].key);
         if (choice === 'type') openMissingTyping(fieldIndex);
         else if (choice === 'say') sayMissingAgain(fieldIndex);
+        else if (choice === 'blank' && optional) latestRef.current.leaveMissingBlank(fieldIndex);
         else if (tries >= 1) openMissingTyping(fieldIndex, { auto: true });   // speech is not getting through
         else {
-          const msg = 'Please say type, or say it again. You can also tap a button on the screen.';
+          const msg = choice === 'blank'
+            ? `Your ${spokenLabel(INTERVIEW_FIELDS[fieldIndex])} is needed for the Cedula. Please say it, or type it.`
+            : `Please say "say it", or "type it".${optional ? ' Or say leave it blank.' : ''} You can also tap a button on the screen.`;
           addChatMessage('assistant', msg);
           speak(msg, () => listenForMissingChoice(fieldIndex, tries + 1));
         }
       },
     });
   }, [listenOnce, speak, openMissingTyping, sayMissingAgain, setPhase, setStatusMessage, addChatMessage]);
+
+  // "Leave it blank" (plan 002.2): only for a question outside the 6 required ones. It is not asked again.
+  const leaveMissingBlank = useCallback((fieldIndex) => {
+    const field = INTERVIEW_FIELDS[fieldIndex];
+    if (isRequiredKey(field.key)) return;
+    practice.session.note(practice.rec.leaveBlank(field.key));
+    skippedRef.current.delete(fieldIndex);
+    missingRetryRef.current.delete(fieldIndex);
+    resetLadder(fieldIndex);
+    missingTurnRef.current += 1;
+    pendingMissingRef.current = null;
+    setMissingView(null);
+    addChatMessage('assistant', `${field.label}: left blank`);
+    latestRef.current.startVoiceReview();
+  }, [setMissingView, addChatMessage, practice]);
 
   // A typed answer is checked by the same /api/extraction rules as a spoken one.
   const submitMissingTyped = useCallback(async (fieldIndex, text) => {
@@ -2083,7 +2113,8 @@ function useConversationEngine({
     stopBrowserListening();
     if (choice === 'type') openMissingTyping(fieldIndex);
     else if (choice === 'say') sayMissingAgain(fieldIndex);
-  }, [cancelSpeech, stopBrowserListening, openMissingTyping, sayMissingAgain, submitMissingTyped]);
+    else if (choice === 'blank') leaveMissingBlank(fieldIndex);
+  }, [cancelSpeech, stopBrowserListening, openMissingTyping, sayMissingAgain, submitMissingTyped, leaveMissingBlank]);
 
   // The details are shown on screen instead of being read aloud (the old read-back of
   // all 14 fields took about 53 seconds). Missing answers are asked for first; "say yes"
@@ -2092,11 +2123,12 @@ function useConversationEngine({
     // The "Voice Review" button on the manual review page: switch the microphone on first,
     // or nothing would be listening for the "yes".
     if (!conversationActiveRef.current && !(await activateVoice())) return;
-    const missing = missingRequiredIndexes(answersRef.current);
+    const missing = endStepIndexes(answersRef.current, skippedRef.current);
     if (missing.length) {
       askMissingField(missing[0]);
       return;
     }
+    endStepTotalRef.current = 0;
     missingTurnRef.current += 1;
     pendingMissingRef.current = null;
     setMissingView(null);
@@ -2112,7 +2144,7 @@ function useConversationEngine({
   // "Yes": check first ("Checking your details."); issueForm says "Saving your application"
   // only once every check has passed. The microphone stays on until the outcome is known.
   const issueNow = useCallback(async () => {
-    if (missingRequiredIndexes(answersRef.current).length) {
+    if (endStepIndexes(answersRef.current, skippedRef.current).length) {
       startVoiceReview();
       return;
     }
@@ -2261,9 +2293,12 @@ function useConversationEngine({
 
   latestRef.current = {
     startVoiceReview, openMissingTyping, listenForMissingChoice, confirmAnswer, handleBirthResult, missAndContinue, startSpelling,
+    leaveMissingBlank,
   };
 
   return {
+    // The end step's list for the screen (skipped questions live in a ref here).
+    endStepIndexesOf: (values) => endStepIndexes(values, skippedRef.current),
     isConversationActive,
     isSpeaking,
     isListening,
@@ -2302,11 +2337,12 @@ const IssuingOverlay = ({ message }) => createPortal(
 );
 
 /**
- * A required answer that is still blank (skipped during the interview), asked for again
- * before the final "yes": Type it / Say it again, then a text box for that field only.
- * The buttons work like saying "type" or "say it again", even if that word was misheard.
+ * The end step (plan 001.3, widened by plan 002.2): a skipped question, asked for again before the
+ * final "yes": Say it / Type it (and Leave it blank when it is not required), then a text box for
+ * that field only. The buttons work like saying the words, even if a word was misheard. Large
+ * controls: the applicant types if able, otherwise staff type on the same screen.
  */
-const MissingFieldPanel = ({ view, onType, onSay, onTyped }) => {
+const MissingFieldPanel = ({ view, onType, onSay, onTyped, onBlank }) => {
   const [typed, setTyped] = useState('');
   const inputRef = useRef(null);
   useEffect(() => { setTyped(''); }, [view.key]);
@@ -2321,7 +2357,12 @@ const MissingFieldPanel = ({ view, onType, onSay, onTyped }) => {
 
   return (
     <Card accent="warning" className="p-5" role="region" aria-live="polite" aria-label={`Still needed: ${view.label}`}>
-      <p className="text-sm font-semibold text-[var(--color-warning)]">Still needed</p>
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <p className="text-sm font-semibold text-[var(--color-warning)]">Still needed</p>
+        {view.total > 0 && (
+          <Badge tone="warning">{view.left} of {view.total} still needed</Badge>
+        )}
+      </div>
       <p className="mt-1 text-xl font-bold text-[var(--color-neutral-900)] break-words">
         I still need your {view.label.toLowerCase()}.
       </p>
@@ -2329,12 +2370,18 @@ const MissingFieldPanel = ({ view, onType, onSay, onTyped }) => {
       {view.mode === 'choice' && (
         <>
           <p className="mt-1 text-sm text-[var(--color-neutral-600)]">
-            Say <strong>"type"</strong> or <strong>"say it again"</strong>, or tap a button.
+            Say <strong>"say it"</strong> or <strong>"type it"</strong>
+            {view.optional && <>, or <strong>"leave it blank"</strong></>}, or tap a button.
           </p>
           <div className="mt-4 grid grid-cols-1 gap-2 sm:grid-cols-2">
-            <Button size="lg" icon={Keyboard} onClick={onType}>Type it</Button>
-            <Button size="lg" variant="secondary" icon={Mic} onClick={onSay}>Say it again</Button>
+            <Button size="lg" icon={Mic} onClick={onSay}>Say it</Button>
+            <Button size="lg" variant="secondary" icon={Keyboard} onClick={onType}>Type it</Button>
           </div>
+          {view.optional && (
+            <div className="mt-2">
+              <Button size="lg" variant="ghost" onClick={onBlank}>Leave it blank</Button>
+            </div>
+          )}
         </>
       )}
 
@@ -2357,6 +2404,11 @@ const MissingFieldPanel = ({ view, onType, onSay, onTyped }) => {
             {view.allowSay && (
               <Button variant="ghost" size="lg" icon={Mic} onClick={onSay} disabled={view.checking}>
                 Say it again instead
+              </Button>
+            )}
+            {view.optional && (
+              <Button variant="ghost" size="lg" onClick={onBlank} disabled={view.checking}>
+                Leave it blank
               </Button>
             )}
           </div>
@@ -3128,6 +3180,7 @@ const NewApplication = () => {
 
   // ── Conversation Engine Hook ──
   const {
+    endStepIndexesOf,
     isConversationActive,
     startConversation,
     stopConversation,
@@ -3220,7 +3273,7 @@ const NewApplication = () => {
   if (step === 'voice-review') {
     // The screen matches what the assistant says: missing answers first, and the
     // "please confirm" line only once nothing required is blank.
-    const missingLabels = missingRequiredIndexes(answers).map((index) => INTERVIEW_FIELDS[index].label);
+    const missingLabels = endStepIndexesOf(answers).map((index) => INTERVIEW_FIELDS[index].label);
     const readyToConfirm = awaitingConfirmation && missingLabels.length === 0 && !missingView;
     return (
       <div className="grid grid-cols-1 gap-5 xl:grid-cols-[minmax(0,1fr)_360px]">
@@ -3230,7 +3283,7 @@ const NewApplication = () => {
             <h1 className="text-2xl font-bold text-[var(--color-neutral-900)]">Confirming Your Information</h1>
             {missingLabels.length > 0 ? (
               <p className="mt-1.5 text-sm text-[var(--color-neutral-600)] leading-relaxed">
-                A few required answers are still missing. Type them, or say them again.
+                A few questions were skipped. Say them again, or type them.
               </p>
             ) : (
               <p className="mt-1.5 text-sm text-[var(--color-neutral-600)] leading-relaxed">
@@ -3256,6 +3309,7 @@ const NewApplication = () => {
               onType={() => tapMissing('type')}
               onSay={() => tapMissing('say')}
               onTyped={(text) => tapMissing('typed', text)}
+              onBlank={() => tapMissing('blank')}
             />
           )}
 
