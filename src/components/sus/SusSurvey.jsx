@@ -171,13 +171,13 @@ const SusSurvey = ({ platform = 'web', transactionId = null, defaultFeatures = [
       {step === 'profile' && (
         <div className="space-y-7">
           <div>
-            <SectionTitle help="Optional. You can leave this blank.">Your name</SectionTitle>
+            <SectionTitle>Name (optional)</SectionTitle>
             <input
               value={name}
               onChange={(e) => setName(e.target.value)}
               maxLength={120}
               autoComplete="name"
-              placeholder="Leave blank to stay anonymous"
+              placeholder="Name (optional)"
               className="focusable w-full h-14 rounded-[var(--radius-md)] border-2 border-[var(--color-neutral-200)] px-4 text-base"
             />
           </div>
