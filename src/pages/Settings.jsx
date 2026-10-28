@@ -7,6 +7,7 @@ import Button from '../components/ui/Button';
 import { settingsAPI, SETTINGS_UPDATED_EVENT } from '../api/settings';
 import { getApiErrorMessage } from '../api/errors';
 import { susAPI } from '../api/sus';
+import EvalSettingsCard from '../components/eval/EvalSettingsCard';
 
 const EMPTY = {
   barangay_name: '',
@@ -191,6 +192,9 @@ const Settings = () => {
                 </div>
               </CardBody>
             </Card>
+
+            {/* Evaluation mode (plan 003): the Settings page is admin only. */}
+            <div className="lg:col-span-2"><EvalSettingsCard /></div>
           </div>
 
           <aside className="space-y-4">
