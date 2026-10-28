@@ -1,4 +1,4 @@
-import { combineSessions, createEvalContext, createEvalSession, toFieldNote } from './evalLog';
+import { createEvalContext, createEvalSession, toFieldNote } from './evalLog';
 
 const ids = () => {
   let n = 0;
@@ -205,26 +205,5 @@ describe('the evaluation session', () => {
   test('toFieldNote keeps skips and the left-blank marker', () => {
     expect(toFieldNote({ field: 'icr_no', accepted_engine: 'skipped', accepted_value: null, seconds: null, attempt_details: [] }))
       .toMatchObject({ skipped: true, accepted_value: null, seconds: null });
-  });
-});
-
-describe('combineSessions', () => {
-  test('one call feeds both logs; the practice id stays the practice id', () => {
-    const practice = { id: 5, active: true, start: jest.fn(), note: jest.fn(), issued: jest.fn(), finish: jest.fn() };
-    const evaluation = { id: 9, active: true, start: jest.fn(), note: jest.fn(), issued: jest.fn(), finish: jest.fn(), batch: () => ({ notes: [] }) };
-    const both = combineSessions(practice, evaluation);
-    both.start('manual');
-    both.note({ field: 'surname' });
-    both.issued();
-    both.finish({ keepalive: true });
-    expect(both.id).toBe(5);
-    expect(both.evalId).toBe(9);
-    expect(both.evalBatch()).toEqual({ notes: [] });
-    [practice, evaluation].forEach((log) => {
-      expect(log.start).toHaveBeenCalledWith('manual');
-      expect(log.note).toHaveBeenCalledWith({ field: 'surname' });
-      expect(log.issued).toHaveBeenCalled();
-      expect(log.finish).toHaveBeenCalledWith({ keepalive: true });
-    });
   });
 });
