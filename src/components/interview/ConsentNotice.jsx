@@ -7,8 +7,10 @@ import { settingsAPI } from '../../api/settings';
 
 // Short privacy notice shown before each applicant's interview (Data Privacy Act of
 // 2012, RA 10173). Every statement here must stay true for the system as built:
-// audio is transcribed and not stored, the assistant's voice comes from an online
-// service, and the browser's speech service is only a backup.
+// audio is transcribed and, outside the study, not stored; while evaluation mode is on (plan 003) the
+// recording is saved for the research team, and the wording says so. The assistant's voice comes from an
+// online service, and the browser's speech service is only a backup.
+const RECORDING_LINE = 2;   // index of the recording line in `points`
 const TEXT = {
   en: {
     title: 'Before we start',
@@ -24,6 +26,7 @@ const TEXT = {
       "The assistant's voice comes from an online voice service, which receives the sentences it reads to you, such as your name when it checks it. If our speech system is down, your browser's speech service may be used instead.",
       'Under the Data Privacy Act of 2012 (RA 10173), you may ask to see or correct your information.',
     ],
+    studyPoint: "Your voice is turned into text by our speech system. For this study, the recording is saved so the research team can check the system's accuracy. Only the research team can access it, and it will be deleted by the administrator after the study.",
     choice: 'You can stop at any time. If you prefer, the staff can fill out a paper form with you instead.',
     agree: 'I agree, start',
     decline: 'I do not agree',
@@ -47,6 +50,7 @@ const TEXT = {
       'Ang boses ng assistant ay mula sa isang online na voice service, na tumatanggap ng mga pangungusap na binabasa nito sa iyo, tulad ng iyong pangalan kapag sinusuri ito. Kung hindi gumagana ang aming speech system, maaaring gamitin ang speech service ng browser.',
       'Ayon sa Data Privacy Act of 2012 (RA 10173), maaari mong hilingin na makita o maitama ang iyong impormasyon.',
     ],
+    studyPoint: 'Ginagawang teksto ng aming speech system ang iyong boses. Para sa pag-aaral na ito, itinatago ang recording upang masuri ng research team ang katumpakan ng sistema. Ang research team lamang ang may access dito, at buburahin ito ng administrator pagkatapos ng pag-aaral.',
     choice: 'Maaari kang tumigil anumang oras. Kung gusto mo, tutulungan ka ng kawani na sumagot sa papel na form.',
     agree: 'Sumasang-ayon ako, magsimula',
     decline: 'Hindi ako sumasang-ayon',
@@ -61,8 +65,9 @@ const TEXT = {
 /**
  * Privacy notice the applicant agrees to before the interview starts.
  * `speak(text, onEnd)` / `stopSpeaking()` read it aloud for applicants who cannot read well.
+ * `recording`: evaluation mode saves the recording, so the "not saved" line is replaced by the study line.
  */
-const ConsentNotice = ({ open, onAgree, speak, stopSpeaking }) => {
+const ConsentNotice = ({ open, onAgree, speak, stopSpeaking, recording = false }) => {
   const [lang, setLang] = useState('en');
   const [declined, setDeclined] = useState(false);
   const [reading, setReading] = useState(false);
@@ -84,7 +89,11 @@ const ConsentNotice = ({ open, onAgree, speak, stopSpeaking }) => {
   }, [open]);
 
   if (!open) return null;
-  const t = TEXT[lang];
+  const base = TEXT[lang];
+  // Only the recording line changes; the original "not saved" line stays when evaluation mode is off.
+  const t = recording
+    ? { ...base, points: base.points.map((point, i) => (i === RECORDING_LINE ? base.studyPoint : point)) }
+    : base;
 
   const readAloud = () => {
     if (reading) {

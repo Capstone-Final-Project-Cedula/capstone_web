@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { Suspense, lazy } from 'react';
 import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-dom';
 import { ToastContainer } from 'react-toastify';
 import 'react-toastify/dist/ReactToastify.css';
@@ -15,6 +15,9 @@ import StaffManagement from './pages/StaffManagement';
 import Settings from './pages/Settings';
 import SusSurveyPage from './pages/SusSurveyPage';
 import LoadingSpinner from './components/common/LoadingSpinner';
+
+// Evaluation mode (plan 003): admin only, and loaded on demand so it is not in the staff bundle.
+const Evaluation = lazy(() => import('./pages/Evaluation'));
 
 const ProtectedRoute = ({ children, adminOnly = false }) => {
   const { isAuthenticated, loading, isAdmin } = useAuth();
@@ -43,6 +46,14 @@ const AppRoutes = () => {
         <Route path="records" element={<ProtectedRoute adminOnly><Records /></ProtectedRoute>} />
         <Route path="access-log" element={<ProtectedRoute adminOnly><AccessLog /></ProtectedRoute>} />
         <Route path="practice-log" element={<ProtectedRoute adminOnly><PracticeLog /></ProtectedRoute>} />
+        <Route
+          path="evaluation"
+          element={(
+            <ProtectedRoute adminOnly>
+              <Suspense fallback={<LoadingSpinner size="lg" />}><Evaluation /></Suspense>
+            </ProtectedRoute>
+          )}
+        />
         <Route path="staff" element={<ProtectedRoute adminOnly><StaffManagement /></ProtectedRoute>} />
         <Route path="settings" element={<ProtectedRoute adminOnly><Settings /></ProtectedRoute>} />
       </Route>

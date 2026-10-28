@@ -21,6 +21,7 @@ import { speechAPI } from '../api/speech';
 import { extractionAPI } from '../api/extraction';
 import { formsAPI } from '../api/forms';
 import { practiceLogAPI } from '../api/practiceLog';
+import { evalAPI } from '../api/eval';
 import apiClient from '../api/client';
 import { getApiErrorMessage } from '../api/errors';
 import LoadingSpinner from '../components/common/LoadingSpinner';
@@ -43,6 +44,7 @@ import {
   missingRequiredIndexes as missingRequiredIn, parseMissingChoice,
 } from '../utils/endStep';
 import { createPracticeRecorder, createPracticeSession } from '../utils/practiceLog';
+import { combineSessions, createEvalSession, evalContext } from '../utils/evalLog';
 import { pickedCodes, pickerKind, unchangedPicks } from '../utils/pickers';
 import { Keyboard, Mic } from 'lucide-react';
 import Button from '../components/ui/Button';
@@ -1146,10 +1148,11 @@ function useWhisperListener() {
       }
       onTranscribing?.();
       try {
-        const wav = await convertRecordingToWav(new Blob(chunks, { type: mimeType || 'audio/webm' }));
+        const recording = new Blob(chunks, { type: mimeType || 'audio/webm' });   // kept as it is for evaluation mode
+        const wav = await convertRecordingToWav(recording);
         const file = new File([wav], 'answer.wav', { type: 'audio/wav' });
         const t0 = performance.now();
-        const { data } = await speechAPI.transcribe(file, fieldKey, { timeout: 20000, town, province });
+        const { data } = await speechAPI.transcribe(file, fieldKey, { timeout: 20000, town, province, clip: recording });
         onEnd?.((data.transcript || '').trim(), {
           engine: 'whisper',
           seconds: Math.round((performance.now() - t0) / 100) / 10,
@@ -1420,6 +1423,7 @@ function useConversationEngine({
     }
     const asked = askedOf(addressRef.current, birthRef.current, fieldIndex);
     practice.rec.asked(logKeyOf(asked));   // practice log: the clock starts at the first ask only
+    evalContext.ask(asked.key);            // evaluation mode: which question (or place / address step) is being asked
     clearConfirmView();
     currentFieldIndexRef.current = fieldIndex;
     setCurrentFieldIndex(fieldIndex);
@@ -2109,6 +2113,8 @@ function useConversationEngine({
     const field = INTERVIEW_FIELDS[fieldIndex];
     const optional = !isRequiredKey(field.key);
     practice.rec.endStep();   // practice log (plan 002.2): tries from here on are "finished at the end step"
+    evalContext.endStep();
+    evalContext.ask(field.key);
     missingTurnRef.current += 1;
     pendingMissingRef.current = fieldIndex;
     clearConfirmView();
@@ -2131,6 +2137,7 @@ function useConversationEngine({
   const openMissingTyping = useCallback((fieldIndex, { auto = false } = {}) => {
     const field = INTERVIEW_FIELDS[fieldIndex];
     practice.rec.asked(field.key);   // practice log: typing a missing answer is timed from here
+    evalContext.ask(field.key);
     missingTurnRef.current += 1;
     pendingMissingRef.current = fieldIndex;
     clearConfirmView();
@@ -2881,6 +2888,15 @@ const NewApplication = () => {
   const [fieldError, setFieldError] = useState('');      // why the current answer was not accepted
   const [reviewErrors, setReviewErrors] = useState({});   // per-field problems found before issuing
   const [consentGiven, setConsentGiven] = useState(false); // privacy notice accepted for this applicant
+  // Evaluation mode (plan 003): is the recording saved? Unknown (server unreachable) is treated as saved, so the
+  // notice never says "not saved" when it might be; a backend without evaluation mode (404) saves nothing.
+  const [recordingSaved, setRecordingSaved] = useState(true);
+  useEffect(() => {
+    if (consentGiven) return;
+    Promise.resolve().then(() => evalAPI.consent())
+      .then(({ data }) => setRecordingSaved(Boolean(data?.recording)))
+      .catch((error) => { if (error?.response?.status === 404) setRecordingSaved(false); });
+  }, [consentGiven]);
 
   // ── Refs ──
   const mediaRecorderRef = useRef(null);
@@ -2898,7 +2914,8 @@ const NewApplication = () => {
   const practiceRef = useRef(null);
   if (!practiceRef.current) {
     practiceRef.current = {
-      session: createPracticeSession(practiceLogAPI),
+      // The practice log (temporary) and evaluation mode (plan 003) share the same notes.
+      session: combineSessions(createPracticeSession(practiceLogAPI), createEvalSession(evalAPI, evalContext)),
       rec: createPracticeRecorder({ savedForm: practiceSavedForm }),
     };
   }
@@ -3309,6 +3326,7 @@ const NewApplication = () => {
         input_method: inputMethod,
         raw_transcript: null,
         ...(practice.session.id ? { practice_session_id: practice.session.id } : {}),
+        ...(practice.session.evalId ? { eval_session_id: practice.session.evalId, eval_batch: practice.session.evalBatch() } : {}),
       };
 
       const result = await formsAPI.issue(payload);
@@ -3361,6 +3379,7 @@ const NewApplication = () => {
   const resetInterview = useCallback(() => {
     practice.session.finish();   // no-op when the CTC was issued
     practice.rec.reset();
+    evalContext.reset();
     pickedRef.current = {};
     setStep('interview');
     setCurrentFieldIndex(0);
@@ -3677,9 +3696,11 @@ const NewApplication = () => {
       {isIssuing && <IssuingOverlay message={statusMessage} />}
       <ConsentNotice
         open={!consentGiven}
+        recording={recordingSaved}
         onAgree={() => {
           setConsentGiven(true);
           practice.rec.reset();
+          evalContext.reset();
           practice.session.start('manual');   // practice log: answers "off" unless the backend turned it on
         }}
         speak={speakText}
