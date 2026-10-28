@@ -51,12 +51,12 @@ describe('the evaluation context (plan 003): what each call carries', () => {
     expect(ctx.forExtraction('surname')).toEqual({ session: 7, step: 'spelled', tryId: 'try1' });
   });
 
-  test('yes / no answers are confirm steps and are never joined to the next answer check', () => {
+  test('yes / no answers are confirm steps, and not joined to the answer check of another question', () => {
     const ctx = createEvalContext({ newId: ids() });
     ctx.setSession(7);
     ctx.ask('place_of_birth_town');
     expect(ctx.forTranscribe('confirm')).toMatchObject({ field: 'place_of_birth_town', step: 'confirm' });
-    expect(ctx.forExtraction('place_of_birth_town').tryId).toBeNull();
+    expect(ctx.forExtraction('sex').tryId).toBeNull();
     expect(ctx.forTranscribe('review')).toMatchObject({ field: 'review', step: 'review' });
   });
 
@@ -74,6 +74,57 @@ describe('the evaluation context (plan 003): what each call carries', () => {
     const ctx = createEvalContext();
     ctx.setSession(7);
     expect(ctx.forTranscribe('confirm')).toBeNull();
+  });
+});
+
+describe('Codex verify round 1: attribution', () => {
+  test('spelling after the end step started is an end_said try, not a ladder try', () => {
+    const ctx = createEvalContext({ newId: ids() });
+    ctx.setSession(7);
+    ctx.ask('surname');
+    ctx.endStep();
+    expect(ctx.forTranscribe('spelling').step).toBe('end_said');
+    expect(ctx.forExtraction('surname').step).toBe('end_said');
+  });
+
+  test('a reply at the read-back that is used as a new answer keeps its Whisper try', () => {
+    const ctx = createEvalContext({ newId: ids() });
+    ctx.setSession(7);
+    ctx.ask('surname');
+    ctx.forTranscribe('confirm');                           // "No, it is Abarquez": heard at the yes / no step
+    expect(ctx.forExtraction('surname')).toEqual({ session: 7, step: 'spoken', tryId: 'try1' });
+    expect(ctx.forExtraction('surname').tryId).toBeNull();  // used once
+  });
+
+  test('a plain yes is not claimed by a later check, and the next question clears it', () => {
+    const ctx = createEvalContext({ newId: ids() });
+    ctx.setSession(7);
+    ctx.ask('surname');
+    ctx.forTranscribe('confirm');
+    ctx.ask('given_name');
+    expect(ctx.forExtraction('surname').tryId).toBeNull();
+  });
+
+  test('an old read-back reply (over 15 s) is not claimed', () => {
+    let time = 0;
+    const ctx = createEvalContext({ newId: ids(), now: () => time });
+    ctx.setSession(7);
+    ctx.ask('surname');
+    ctx.forTranscribe('confirm');
+    time = 16000;
+    expect(ctx.forExtraction('surname').tryId).toBeNull();
+  });
+
+  test('a skip that was finished later is still a skip in the batch', async () => {
+    const api = {
+      start: jest.fn().mockResolvedValue({ data: { session_id: 3 } }), finish: jest.fn(), finishKeepalive: jest.fn(),
+    };
+    const session = createEvalSession(api, createEvalContext());
+    session.start('manual');
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    session.note({ field: 'height', accepted_engine: 'skipped', accepted_value: null, attempt_details: [] });
+    session.note({ field: 'height', accepted_engine: 'typed', accepted_value: '158', attempt_details: [] });
+    expect(session.batch().notes[0]).toMatchObject({ accepted_engine: 'typed', accepted_value: '158', skipped: true });
   });
 });
 

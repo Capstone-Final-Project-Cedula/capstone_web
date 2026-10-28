@@ -9,6 +9,7 @@
 const TRY_STEPS = ['spoken', 'spelled', 'end_said'];
 const ASKED_ABOUT = ['confirm', 'missing_choice', 'spelling'];   // Whisper keys that are not questions themselves
 const PENDING_MS = 60000;
+const CONFIRM_MS = 15000;   // a reply at "is that correct?" that turns out to be a new answer
 const ERROR_REASONS = ['whisper-failed', 'extract-failed', 'mic-blocked'];
 
 const randomId = () => `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
@@ -23,20 +24,21 @@ export const createEvalContext = ({ newId = randomId, now = () => Date.now() } =
   let field = null;
   let stage = 'spoken';
   let pending = null;
+  let confirmTry = null;
 
   const stepFor = (fieldKey) => {
     if (fieldKey === 'review') return 'review';
     if (fieldKey === 'confirm' || fieldKey === 'missing_choice') return 'confirm';
-    if (fieldKey === 'spelling') return 'spelled';
+    if (fieldKey === 'spelling') return stage === 'end_said' ? 'end_said' : 'spelled';   // the end step is not the ladder
     return stage;
   };
 
   return {
     get sessionId() { return sessionId; },
     setSession(id) { sessionId = id || null; if (!id) pending = null; },
-    ask(key) { field = key || null; },
+    ask(key) { field = key || null; confirmTry = null; },
     endStep() { stage = 'end_said'; },
-    reset() { field = null; stage = 'spoken'; pending = null; },
+    reset() { field = null; stage = 'spoken'; pending = null; confirmTry = null; },
 
     /** For POST /speech/transcribe, or null when no evaluation session is running. */
     forTranscribe(fieldKey) {
@@ -46,6 +48,7 @@ export const createEvalContext = ({ newId = randomId, now = () => Date.now() } =
       if (!target) return null;
       const tryId = newId();
       pending = TRY_STEPS.includes(step) ? { tryId, field: target, step, at: now() } : null;
+      confirmTry = step === 'confirm' ? { tryId, field: target, at: now() } : null;
       return { session: sessionId, field: target, step, tryId };
     },
 
@@ -55,6 +58,12 @@ export const createEvalContext = ({ newId = randomId, now = () => Date.now() } =
       const p = pending;
       pending = null;
       if (p && p.field === key && now() - p.at < PENDING_MS) return { session: sessionId, step: p.step, tryId: p.tryId };
+      // The reply at the read-back was a new answer, not a yes / no: it is that spoken (or spelled) try.
+      const c = confirmTry;
+      confirmTry = null;
+      if (c && c.field === key && now() - c.at < CONFIRM_MS) {
+        return { session: sessionId, step: stage === 'end_said' ? 'end_said' : 'spoken', tryId: c.tryId };
+      }
       return { session: sessionId, step: stage === 'end_said' ? 'end_said' : 'spoken', tryId: null };
     },
   };
@@ -120,7 +129,8 @@ export const createEvalSession = (api, ctx = evalContext, { device = deviceLabel
 
     note(note) {
       if (!current || !note?.field) return;
-      notes[note.field] = toFieldNote(note);
+      const skippedBefore = Boolean(notes[note.field]?.skipped);
+      notes[note.field] = { ...toFieldNote(note), skipped: skippedBefore || note.accepted_engine === 'skipped' };   // a recovered skip is still a skip
       errors += (note.attempt_details || []).filter((a) => ERROR_REASONS.includes(a.reason)).length;
     },
 
