@@ -7,7 +7,7 @@ import {
   QrCode,
   FileText,
   Users,
-  ClipboardList,
+  FlaskConical,
   Settings as SettingsIcon,
   LogOut,
   ChevronLeft,
@@ -26,7 +26,7 @@ const Sidebar = ({ isCollapsed, onToggleCollapse, onMobileClose }) => {
     { name: 'QR Scanner', href: '/qr-scan', icon: QrCode },
     { name: 'Records', href: '/records', icon: FileText },
     { name: 'Staff', href: '/staff', icon: Users },
-    { name: 'Practice Log', href: '/practice-log', icon: ClipboardList },   // temporary, plan 001.7
+    { name: 'Evaluation', href: '/evaluation', icon: FlaskConical },   // admin only (plan 003)
     { name: 'Settings', href: '/settings', icon: SettingsIcon },
   ];
 

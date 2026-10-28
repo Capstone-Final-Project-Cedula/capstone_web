@@ -1,0 +1,209 @@
+import { createEvalContext, createEvalSession, toFieldNote } from './evalLog';
+
+const ids = () => {
+  let n = 0;
+  return () => `try${(n += 1)}`;
+};
+
+describe('the evaluation context (plan 003): what each call carries', () => {
+  test('nothing is sent without a running session', () => {
+    const ctx = createEvalContext();
+    expect(ctx.forTranscribe('surname')).toBeNull();
+    expect(ctx.forExtraction('surname')).toBeNull();
+  });
+
+  test('a question key is its own field and a spoken try', () => {
+    const ctx = createEvalContext({ newId: ids() });
+    ctx.setSession(7);
+    expect(ctx.forTranscribe('surname')).toEqual({ session: 7, field: 'surname', step: 'spoken', tryId: 'try1' });
+  });
+
+  test('the answer check joins the Whisper try just before it (same try id and step)', () => {
+    const ctx = createEvalContext({ newId: ids() });
+    ctx.setSession(7);
+    ctx.forTranscribe('given_name');
+    expect(ctx.forExtraction('given_name')).toEqual({ session: 7, step: 'spoken', tryId: 'try1' });
+    // used once: the next check has no Whisper call behind it (browser engine or typed)
+    expect(ctx.forExtraction('given_name')).toEqual({ session: 7, step: 'spoken', tryId: null });
+  });
+
+  test('a check for another question does not take the pending try', () => {
+    const ctx = createEvalContext({ newId: ids() });
+    ctx.setSession(7);
+    ctx.forTranscribe('surname');
+    expect(ctx.forExtraction('sex').tryId).toBeNull();
+  });
+
+  test('a stale try (older than a minute) is not joined', () => {
+    let time = 0;
+    const ctx = createEvalContext({ newId: ids(), now: () => time });
+    ctx.setSession(7);
+    ctx.forTranscribe('surname');
+    time = 61000;
+    expect(ctx.forExtraction('surname').tryId).toBeNull();
+  });
+
+  test('spelling is a spelled try of the question being asked', () => {
+    const ctx = createEvalContext({ newId: ids() });
+    ctx.setSession(7);
+    ctx.ask('surname');
+    expect(ctx.forTranscribe('spelling')).toEqual({ session: 7, field: 'surname', step: 'spelled', tryId: 'try1' });
+    expect(ctx.forExtraction('surname')).toEqual({ session: 7, step: 'spelled', tryId: 'try1' });
+  });
+
+  test('yes / no answers are confirm steps, and not joined to the answer check of another question', () => {
+    const ctx = createEvalContext({ newId: ids() });
+    ctx.setSession(7);
+    ctx.ask('place_of_birth_town');
+    expect(ctx.forTranscribe('confirm')).toMatchObject({ field: 'place_of_birth_town', step: 'confirm' });
+    expect(ctx.forExtraction('sex').tryId).toBeNull();
+    expect(ctx.forTranscribe('review')).toMatchObject({ field: 'review', step: 'review' });
+  });
+
+  test('after the end step starts, spoken answers are end_said tries', () => {
+    const ctx = createEvalContext({ newId: ids() });
+    ctx.setSession(7);
+    ctx.endStep();
+    expect(ctx.forTranscribe('height').step).toBe('end_said');
+    expect(ctx.forExtraction('height').step).toBe('end_said');
+    ctx.reset();
+    expect(ctx.forTranscribe('height').step).toBe('spoken');
+  });
+
+  test('a confirm with no question asked yet is not logged', () => {
+    const ctx = createEvalContext();
+    ctx.setSession(7);
+    expect(ctx.forTranscribe('confirm')).toBeNull();
+  });
+});
+
+describe('Codex verify round 1: attribution', () => {
+  test('spelling after the end step started is an end_said try, not a ladder try', () => {
+    const ctx = createEvalContext({ newId: ids() });
+    ctx.setSession(7);
+    ctx.ask('surname');
+    ctx.endStep();
+    expect(ctx.forTranscribe('spelling').step).toBe('end_said');
+    expect(ctx.forExtraction('surname').step).toBe('end_said');
+  });
+
+  test('a reply at the read-back that is used as a new answer keeps its Whisper try', () => {
+    const ctx = createEvalContext({ newId: ids() });
+    ctx.setSession(7);
+    ctx.ask('surname');
+    ctx.forTranscribe('confirm');                           // "No, it is Abarquez": heard at the yes / no step
+    expect(ctx.forExtraction('surname')).toEqual({ session: 7, step: 'spoken', tryId: 'try1' });
+    expect(ctx.forExtraction('surname').tryId).toBeNull();  // used once
+  });
+
+  test('a plain yes is not claimed by a later check, and the next question clears it', () => {
+    const ctx = createEvalContext({ newId: ids() });
+    ctx.setSession(7);
+    ctx.ask('surname');
+    ctx.forTranscribe('confirm');
+    ctx.ask('given_name');
+    expect(ctx.forExtraction('surname').tryId).toBeNull();
+  });
+
+  test('an old read-back reply (over 15 s) is not claimed', () => {
+    let time = 0;
+    const ctx = createEvalContext({ newId: ids(), now: () => time });
+    ctx.setSession(7);
+    ctx.ask('surname');
+    ctx.forTranscribe('confirm');
+    time = 16000;
+    expect(ctx.forExtraction('surname').tryId).toBeNull();
+  });
+
+  test('a skip that was finished later is still a skip in the batch', async () => {
+    const api = {
+      start: jest.fn().mockResolvedValue({ data: { session_id: 3 } }), finish: jest.fn(), finishKeepalive: jest.fn(),
+    };
+    const session = createEvalSession(api, createEvalContext());
+    session.start('manual');
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    session.note({ field: 'height', accepted_engine: 'skipped', accepted_value: null, attempt_details: [] });
+    session.note({ field: 'height', accepted_engine: 'typed', accepted_value: '158', attempt_details: [] });
+    expect(session.batch().notes[0]).toMatchObject({ accepted_engine: 'typed', accepted_value: '158', skipped: true });
+  });
+});
+
+describe('the evaluation session', () => {
+  const fakeApi = (sessionId = 11) => ({
+    start: jest.fn().mockResolvedValue({ data: { session_id: sessionId } }),
+    finish: jest.fn().mockResolvedValue({}),
+    finishKeepalive: jest.fn(),
+  });
+  const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
+
+  test('start sets the id on the context; the batch carries the notes', async () => {
+    const api = fakeApi();
+    const ctx = createEvalContext();
+    const session = createEvalSession(api, ctx, { device: () => 'Test PC' });
+    session.start('manual');
+    await settle();
+    expect(api.start).toHaveBeenCalledWith('manual', 'Test PC');
+    expect(session.id).toBe(11);
+    expect(ctx.sessionId).toBe(11);
+    session.note({ field: 'surname', accepted_engine: 'whisper', accepted_value: 'Cruz', seconds: 3.2, attempt_details: [] });
+    session.note({ field: 'surname', accepted_engine: 'typed', accepted_value: 'Cruz', seconds: 9, attempt_details: [{ reason: 'left-blank' }] });
+    expect(session.batch()).toEqual({
+      notes: [{ field: 'surname', accepted_engine: 'typed', accepted_value: 'Cruz', left_blank: true, skipped: false, seconds: 9 }],
+      errors: 0,
+    });
+  });
+
+  test('logging off on the backend (no session id): nothing more is ever sent', async () => {
+    const api = fakeApi(null);
+    const ctx = createEvalContext();
+    const session = createEvalSession(api, ctx);
+    session.start('manual');
+    await settle();
+    expect(session.active).toBe(false);
+    expect(ctx.sessionId).toBeNull();
+    session.note({ field: 'surname', attempt_details: [] });
+    session.finish();
+    await settle();
+    expect(api.finish).not.toHaveBeenCalled();
+  });
+
+  test('leaving before the CTC is issued finishes the session with the batch, once', async () => {
+    const api = fakeApi();
+    const session = createEvalSession(api, createEvalContext());
+    session.start('manual');
+    await settle();
+    session.note({ field: 'sex', accepted_engine: 'skipped', accepted_value: null, attempt_details: [{ reason: 'whisper-failed' }] });
+    session.finish();
+    session.finish();
+    await settle();
+    expect(api.finish).toHaveBeenCalledTimes(1);
+    expect(api.finish).toHaveBeenCalledWith(11, expect.objectContaining({ errors: 1 }));
+  });
+
+  test('closing the tab uses the keepalive request', async () => {
+    const api = fakeApi();
+    const session = createEvalSession(api, createEvalContext());
+    session.start('manual');
+    await settle();
+    session.finish({ keepalive: true });
+    expect(api.finishKeepalive).toHaveBeenCalledWith(11, { notes: [], errors: 0 });
+  });
+
+  test('an issued session is not finished as abandoned afterwards', async () => {
+    const api = fakeApi();
+    const ctx = createEvalContext();
+    const session = createEvalSession(api, ctx);
+    session.start('manual');
+    await settle();
+    session.issued();
+    session.finish();
+    await settle();
+    expect(api.finish).not.toHaveBeenCalled();
+    expect(ctx.sessionId).toBeNull();
+  });
+
+  test('toFieldNote keeps skips and the left-blank marker', () => {
+    expect(toFieldNote({ field: 'icr_no', accepted_engine: 'skipped', accepted_value: null, seconds: null, attempt_details: [] }))
+      .toMatchObject({ skipped: true, accepted_value: null, seconds: null });
+  });
+});
