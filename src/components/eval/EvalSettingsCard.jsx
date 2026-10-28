@@ -71,6 +71,11 @@ const EvalSettingsCard = () => {
         const { data } = await evalAPI.deleteAudioBatch(BATCH);
         remaining = data.remaining;
         setPending(remaining);
+        if (data.failed) {
+          // Storage did not confirm some clips: they stay listed, so say so and let the admin try again.
+          toast.error(`${data.failed} clip(s) could not be deleted from storage. They are still listed; try again later.`);
+          return;
+        }
         if (!data.rows) break;
       }
       toast.success('Evaluation audio and text deleted. The numbers were kept.');
