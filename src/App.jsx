@@ -10,7 +10,6 @@ import NewApplication from './pages/NewApplication';
 import QRScan from './pages/QRScan';
 import Records from './pages/Records';
 import AccessLog from './pages/AccessLog';
-import PracticeLog from './pages/PracticeLog';
 import StaffManagement from './pages/StaffManagement';
 import Settings from './pages/Settings';
 import SusSurveyPage from './pages/SusSurveyPage';
@@ -45,7 +44,6 @@ const AppRoutes = () => {
         <Route path="qr-scan" element={<QRScan />} />
         <Route path="records" element={<ProtectedRoute adminOnly><Records /></ProtectedRoute>} />
         <Route path="access-log" element={<ProtectedRoute adminOnly><AccessLog /></ProtectedRoute>} />
-        <Route path="practice-log" element={<ProtectedRoute adminOnly><PracticeLog /></ProtectedRoute>} />
         <Route
           path="evaluation"
           element={(

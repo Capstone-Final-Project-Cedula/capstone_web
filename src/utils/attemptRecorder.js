@@ -1,7 +1,6 @@
-// TEMPORARY practice session log (plan 001.7; plan 003 replaces it).
-// The browser alone knows the tries, the seconds and the typed fixes of an interview, so it builds one
-// note per finished question and sends it to the backend without making anyone wait. Nothing here
-// changes what staff see; every failure is swallowed.
+// The attempt recorder (from plan 001.7, kept by plan 007). The browser alone knows the tries, the seconds
+// and the typed fixes of an interview, so it builds one note per finished question; evaluation mode
+// (utils/evalLog.js) turns the notes into the batch sent at the end. Nothing here changes what staff see.
 
 const ADDRESS_PART_PREFIX = 'address_';
 const seconds1 = (ms) => Math.round(ms / 100) / 10;
@@ -12,7 +11,7 @@ const text500 = (value) => String(value ?? '').slice(0, 500);
  * `savedForm(field, value)` turns a voice-parsed value into the form the CTC saves (the birthday as
  * the ISO date, names title-cased ...), so the backend compares like with like.
  */
-export const createPracticeRecorder = ({ savedForm = (field, value) => value, now = () => Date.now() } = {}) => {
+export const createAttemptRecorder = ({ savedForm = (field, value) => value, now = () => Date.now() } = {}) => {
   let questions = {};
   let addressSeconds = 0;
   let addressEngine = 'whisper';
@@ -132,67 +131,6 @@ export const createPracticeRecorder = ({ savedForm = (field, value) => value, no
       questions = {};
       addressSeconds = 0;
       stage = 'interview';
-    },
-  };
-};
-
-/**
- * One practice session per applicant: started at "I agree, start", notes sent in order without
- * blocking, finished as "abandoned" if the applicant leaves. `api` is practiceLogAPI.
- * Off on the backend (the default) = `start` answers enabled: false and nothing is ever sent.
- */
-export const createPracticeSession = (api) => {
-  let current = null;
-
-  const run = (session, task) => {
-    session.ready = session.ready.then(task).catch(() => {});
-  };
-
-  return {
-    /** The id to send with /forms/issue, or null when the log is off or not started. */
-    get id() {
-      return current?.id ?? null;
-    },
-
-    get active() {
-      return current !== null;
-    },
-
-    start(inputMethod = 'manual') {
-      if (current) return;
-      const session = { id: null, ready: Promise.resolve() };
-      current = session;
-      run(session, async () => {
-        const { data } = await api.start(inputMethod);
-        if (data?.enabled && data.session_id) session.id = data.session_id;
-        else if (current === session) current = null;   // log off: nothing more is ever sent
-      });
-    },
-
-    note(note) {
-      const session = current;
-      if (!session || !note) return;
-      run(session, async () => { if (session.id) await api.addAnswer(session.id, note); });
-    },
-
-    /** The CTC was issued: the backend closed the session; later notes still go out. */
-    issued() {
-      current = null;
-    },
-
-    /**
-     * Leaving the page or starting over before the CTC was issued. `keepalive`: the tab is closing or
-     * reloading, so send at once with a request that outlives the page (only if the id is already known).
-     */
-    finish({ keepalive = false } = {}) {
-      const session = current;
-      current = null;
-      if (!session) return;
-      if (keepalive && session.id && api.finishKeepalive) {
-        api.finishKeepalive(session.id);
-        return;
-      }
-      run(session, async () => { if (session.id) await api.finish(session.id); });
     },
   };
 };

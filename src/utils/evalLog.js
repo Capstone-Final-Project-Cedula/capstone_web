@@ -3,7 +3,7 @@
 //   - which interview a call belongs to, which question is being asked and which step of the ladder
 //     (spoken / spelled / end_said / confirm / review), plus a try id shared by the Whisper call and the
 //     answer check of the same try (Codex plan review, finding 1);
-//   - one batch at the end: typed vs staff, skips, seconds per question (the practice recorder's notes).
+//   - one batch at the end: typed vs staff, skips, seconds per question (the attempt recorder's notes).
 // Nothing here is visible to staff, and every failure is swallowed.
 
 const TRY_STEPS = ['spoken', 'spelled', 'end_said'];
@@ -73,7 +73,7 @@ export const evalContext = createEvalContext();
 
 const text500 = (value) => (value === undefined || value === null || value === '' ? null : String(value).slice(0, 500));
 
-/** The practice recorder's note for one question -> the small note the backend wants. */
+/** The attempt recorder's note for one question -> the small note the backend wants. */
 export const toFieldNote = (note) => ({
   field: note.field,
   accepted_engine: note.accepted_engine || 'whisper',
@@ -158,15 +158,3 @@ export const createEvalSession = (api, ctx = evalContext, { device = deviceLabel
     },
   };
 };
-
-/** The page keeps one object for both logs: the practice log (temporary) and evaluation mode. */
-export const combineSessions = (practice, evaluation) => ({
-  get id() { return practice.id; },           // the practice-log session id sent with /forms/issue
-  get evalId() { return evaluation.id; },
-  get active() { return practice.active || evaluation.active; },
-  start(inputMethod) { practice.start(inputMethod); evaluation.start(inputMethod); },
-  note(note) { practice.note(note); evaluation.note(note); },
-  evalBatch() { return evaluation.batch(); },
-  issued() { practice.issued(); evaluation.issued(); },
-  finish(options) { practice.finish(options); evaluation.finish(options); },
-});

@@ -1,14 +1,14 @@
-import { createPracticeRecorder, createPracticeSession } from './practiceLog';
+import { createAttemptRecorder } from './attemptRecorder';
 
 const clock = (start = 1000) => {
   let t = start;
   return { now: () => t, advance: (ms) => { t += ms; } };
 };
 
-describe('the voice ladder in the practice log (plan 002.2)', () => {
+describe('the voice ladder in the attempt recorder (plan 002.2)', () => {
   test('a skipped question finished at the end step keeps its interview tries, their stage and its seconds', () => {
     const c = clock();
-    const rec = createPracticeRecorder({ now: c.now });
+    const rec = createAttemptRecorder({ now: c.now });
     rec.asked('surname');
     c.advance(20000);
     rec.heard('surname', { text: '', engine: 'whisper', reason: 'browser-no-speech' });
@@ -32,7 +32,7 @@ describe('the voice ladder in the practice log (plan 002.2)', () => {
   });
 
   test('an empty turn keeps why it was empty when the answer check adds its own reason (Codex verify)', () => {
-    const rec = createPracticeRecorder();
+    const rec = createAttemptRecorder();
     rec.asked('place_of_birth');
     rec.heard('place_of_birth', { text: '', engine: 'whisper', reason: 'dropped-echo' });
     rec.parsed('place_of_birth', { ok: false, reason: 'empty', value: '' }, { partial: true });
@@ -48,7 +48,7 @@ describe('the voice ladder in the practice log (plan 002.2)', () => {
   });
 
   test('an optional question left blank at the end is marked, not counted as voice', () => {
-    const rec = createPracticeRecorder();
+    const rec = createAttemptRecorder();
     rec.asked('height');
     rec.heard('height', { text: 'tall', engine: 'whisper' });
     rec.skip('height');
@@ -59,7 +59,7 @@ describe('the voice ladder in the practice log (plan 002.2)', () => {
   });
 
   test('a new applicant starts in the interview stage again', () => {
-    const rec = createPracticeRecorder();
+    const rec = createAttemptRecorder();
     rec.endStep();
     rec.reset();
     rec.heard('sex', { text: 'female', engine: 'whisper' });
@@ -68,17 +68,17 @@ describe('the voice ladder in the practice log (plan 002.2)', () => {
 
   test('a question answered without a skip is timed from its last ask, as before', () => {
     const c = clock();
-    const rec = createPracticeRecorder({ now: c.now });
+    const rec = createAttemptRecorder({ now: c.now });
     rec.asked('sex');
     c.advance(4000);
     expect(rec.accept('sex', 'Female').seconds).toBe(4);
   });
 });
 
-describe('practice recorder (plan 001.7)', () => {
+describe('attempt recorder (plan 001.7)', () => {
   test('a question answered on the second try builds one note with tries, seconds and engine', () => {
     const c = clock();
-    const rec = createPracticeRecorder({ now: c.now });
+    const rec = createAttemptRecorder({ now: c.now });
     rec.asked('surname');
     c.advance(2000);
     rec.heard('surname', { text: 'rayes', engine: 'whisper', seconds: 0.8 });
@@ -105,7 +105,7 @@ describe('practice recorder (plan 001.7)', () => {
   });
 
   test('the first value is kept in the saved form (birthday as the ISO date)', () => {
-    const rec = createPracticeRecorder({
+    const rec = createAttemptRecorder({
       savedForm: (field, value) => (field === 'date' ? '1995-06-20' : value),
     });
     rec.asked('date');
@@ -117,7 +117,7 @@ describe('practice recorder (plan 001.7)', () => {
   });
 
   test('a spelled or typed fix is the accepted engine and never the first voice value', () => {
-    const rec = createPracticeRecorder();
+    const rec = createAttemptRecorder();
     rec.asked('surname');
     rec.heard('surname', { text: 'bakus', engine: 'whisper', seconds: 0.8 });
     rec.parsed('surname', { ok: true, value: 'Bakus' });
@@ -135,7 +135,7 @@ describe('practice recorder (plan 001.7)', () => {
   });
 
   test('an unusable attempt keeps its reason and a given-up question is skipped', () => {
-    const rec = createPracticeRecorder();
+    const rec = createAttemptRecorder();
     rec.asked('height');
     rec.heard('height', { text: '', engine: 'whisper', reason: 'no-speech' });
     rec.heard('height', { text: 'tall', engine: 'whisper', seconds: 0.6 });
@@ -150,7 +150,7 @@ describe('practice recorder (plan 001.7)', () => {
   });
 
   test('the browser engine is recorded, and a later question starts from nothing', () => {
-    const rec = createPracticeRecorder();
+    const rec = createAttemptRecorder();
     rec.asked('sex');
     rec.heard('sex', { text: 'female', engine: 'browser' });
     rec.parsed('sex', { ok: true, value: 'Female' });
@@ -162,7 +162,7 @@ describe('practice recorder (plan 001.7)', () => {
 
   test('a question visited again keeps its first voice value and tries, so the correction counts', () => {
     const c = clock();
-    const rec = createPracticeRecorder({ now: c.now });
+    const rec = createAttemptRecorder({ now: c.now });
     rec.asked('surname');
     rec.heard('surname', { text: 'bakus', engine: 'whisper', seconds: 0.8 });
     rec.parsed('surname', { ok: true, value: 'Bakus' });
@@ -183,7 +183,7 @@ describe('practice recorder (plan 001.7)', () => {
 
   test('address parts are noted one by one, then one joined summary row with the total seconds', () => {
     const c = clock();
-    const rec = createPracticeRecorder({ now: c.now, savedForm: (field, value) => `saved:${value}` });
+    const rec = createAttemptRecorder({ now: c.now, savedForm: (field, value) => `saved:${value}` });
     ['address_town', 'address_barangay', 'address_purok'].forEach((key, i) => {
       rec.asked(key);
       rec.heard(key, { text: `part ${i}`, engine: 'whisper', seconds: 0.7 });
@@ -203,7 +203,7 @@ describe('practice recorder (plan 001.7)', () => {
 
   test('the place of birth steps make one row: tries summed, timed from the first ask, first whole place (plan 001.8)', () => {
     const c = clock();
-    const rec = createPracticeRecorder({ now: c.now });
+    const rec = createAttemptRecorder({ now: c.now });
     rec.asked('place_of_birth');                                   // the shortcut question
     rec.heard('place_of_birth', { text: 'No.', engine: 'whisper' });
     rec.parsed('place_of_birth', { ok: false, value: '' }, { partial: true });
@@ -223,92 +223,9 @@ describe('practice recorder (plan 001.7)', () => {
   });
 
   test('long heard text is cut to what the backend accepts', () => {
-    const rec = createPracticeRecorder();
+    const rec = createAttemptRecorder();
     rec.asked('occupation');
     rec.heard('occupation', { text: 'x'.repeat(900), engine: 'whisper' });
     expect(rec.accept('occupation', 'y'.repeat(900)).attempt_details[0].heard).toHaveLength(500);
-  });
-});
-
-describe('practice session (plan 001.7)', () => {
-  const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
-  const makeApi = (start) => ({
-    start: jest.fn().mockResolvedValue({ data: start }),
-    addAnswer: jest.fn().mockResolvedValue({}),
-    finish: jest.fn().mockResolvedValue({}),
-  });
-
-  test('a spoken "none" is kept as the first value, so "none" then "Santos" counts as a correction', () => {
-    const rec = createPracticeRecorder({ savedForm: (field, value) => (String(value).trim() || null) });
-    rec.asked('middle_name');
-    rec.heard('middle_name', { text: 'none', engine: 'whisper', seconds: 0.6 });
-    rec.parsed('middle_name', { ok: true, value: '' });
-    expect(rec.accept('middle_name', '').first_value).toBeNull();
-    rec.asked('middle_name');                     // revisit
-    rec.heard('middle_name', { text: 'santos', engine: 'whisper', seconds: 0.6 });
-    rec.parsed('middle_name', { ok: true, value: 'Santos' });
-    expect(rec.accept('middle_name', 'Santos').first_value).toBeNull();   // not replaced by "Santos"
-  });
-
-  test('closing the tab sends a keepalive finish at once, without waiting for the queue', async () => {
-    const api = { ...makeApi({ enabled: true, session_id: 7 }), finishKeepalive: jest.fn() };
-    const session = createPracticeSession(api);
-    session.start();
-    await flush();
-    session.finish({ keepalive: true });
-    expect(api.finishKeepalive).toHaveBeenCalledWith(7);
-    await flush();
-    expect(api.finish).not.toHaveBeenCalled();
-  });
-
-  test('log off: nothing is ever sent after start', async () => {
-    const api = makeApi({ enabled: false, session_id: null });
-    const session = createPracticeSession(api);
-    session.start('manual');
-    session.note({ field: 'surname' });
-    session.finish();
-    await flush();
-    expect(api.start).toHaveBeenCalledWith('manual');
-    expect(api.addAnswer).not.toHaveBeenCalled();
-    expect(api.finish).not.toHaveBeenCalled();
-    expect(session.id).toBeNull();
-  });
-
-  test('notes sent before the session id arrives go out in order, then finish', async () => {
-    const api = makeApi({ enabled: true, session_id: 7 });
-    const session = createPracticeSession(api);
-    session.start();
-    session.note({ field: 'surname' });
-    session.note({ field: 'given_name' });
-    session.finish();
-    await flush();
-    expect(api.addAnswer.mock.calls.map((call) => [call[0], call[1].field])).toEqual([[7, 'surname'], [7, 'given_name']]);
-    expect(api.finish).toHaveBeenCalledWith(7);
-    expect(session.active).toBe(false);
-  });
-
-  test('after the CTC is issued a late note still goes out, but finish does not', async () => {
-    const api = makeApi({ enabled: true, session_id: 7 });
-    const session = createPracticeSession(api);
-    session.start();
-    await flush();
-    expect(session.id).toBe(7);
-    session.note({ field: 'surname' });
-    session.issued();
-    session.finish();
-    await flush();
-    expect(api.addAnswer).toHaveBeenCalledTimes(1);
-    expect(api.finish).not.toHaveBeenCalled();
-  });
-
-  test('a failing backend never throws into the interview', async () => {
-    const api = makeApi({ enabled: true, session_id: 7 });
-    api.addAnswer.mockRejectedValue(new Error('network'));
-    const session = createPracticeSession(api);
-    session.start();
-    session.note({ field: 'surname' });
-    session.note({ field: 'given_name' });
-    await flush();
-    expect(api.addAnswer).toHaveBeenCalledTimes(2);
   });
 });

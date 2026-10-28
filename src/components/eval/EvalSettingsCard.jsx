@@ -106,13 +106,6 @@ const EvalSettingsCard = () => {
           </div>
         </div>
 
-        {cfg.practice_log_conflict && (
-          <p className="mb-4 text-sm text-[var(--color-warning)]" role="alert">
-            The temporary practice log is on in the backend settings, so evaluation logging is paused. Turn
-            PRACTICE_LOG_ENABLED off and restart the backend.
-          </p>
-        )}
-
         <div className="space-y-5">
           <label className="flex items-start gap-3">
             <input
