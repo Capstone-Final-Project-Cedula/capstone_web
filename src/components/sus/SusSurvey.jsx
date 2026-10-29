@@ -51,7 +51,7 @@ const SectionTitle = ({ children, help }) => (
  * The SUS questionnaire: consent → about you → 10 statements → comments → thank you.
  * The score is never shown to the respondent.
  */
-const SusSurvey = ({ platform = 'web', transactionId = null, defaultFeatures = [], onClose, closeLabel = 'Done' }) => {
+const SusSurvey = ({ platform = 'web', transactionId = null, defaultFeatures = [], onClose, onDecline, closeLabel = 'Done' }) => {
   const [step, setStep] = useState('consent');
   const [consent, setConsent] = useState(false);
   const [name, setName] = useState('');
@@ -159,7 +159,7 @@ const SusSurvey = ({ platform = 'web', transactionId = null, defaultFeatures = [
             label="I agree to answer this survey"
           />
           <div className="flex gap-3 justify-between [&>*:last-child]:flex-1 sm:[&>*:last-child]:flex-none">
-            <Button variant="secondary" size="lg" className="h-14 px-6 text-base" onClick={onClose}>No, thanks</Button>
+            <Button variant="secondary" size="lg" className="h-14 px-6 text-base" onClick={onDecline || onClose}>No, thanks</Button>
             <Button size="lg" className="h-14 px-8 text-base" icon={ArrowRight} iconPosition="right"
               disabled={!consent} onClick={() => goTo('profile')}>
               Next

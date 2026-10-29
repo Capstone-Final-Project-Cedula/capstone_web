@@ -13,6 +13,7 @@ import AccessLog from './pages/AccessLog';
 import StaffManagement from './pages/StaffManagement';
 import Settings from './pages/Settings';
 import SusSurveyPage from './pages/SusSurveyPage';
+import SurveyPage from './pages/SurveyPage';
 import LoadingSpinner from './components/common/LoadingSpinner';
 
 // Evaluation mode (plan 003): admin only, and loaded on demand so it is not in the staff bundle.
@@ -53,6 +54,7 @@ const AppRoutes = () => {
           )}
         />
         <Route path="staff" element={<ProtectedRoute adminOnly><StaffManagement /></ProtectedRoute>} />
+        <Route path="survey" element={<ProtectedRoute adminOnly><SurveyPage /></ProtectedRoute>} />
         <Route path="settings" element={<ProtectedRoute adminOnly><Settings /></ProtectedRoute>} />
       </Route>
     </Routes>
