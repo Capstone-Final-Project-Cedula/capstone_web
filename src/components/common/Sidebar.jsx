@@ -8,6 +8,7 @@ import {
   FileText,
   Users,
   FlaskConical,
+  ClipboardList,
   Settings as SettingsIcon,
   LogOut,
   ChevronLeft,
@@ -27,6 +28,7 @@ const Sidebar = ({ isCollapsed, onToggleCollapse, onMobileClose }) => {
     { name: 'Records', href: '/records', icon: FileText },
     { name: 'Staff', href: '/staff', icon: Users },
     { name: 'Evaluation', href: '/evaluation', icon: FlaskConical },   // admin only (plan 003)
+    { name: 'Survey', href: '/survey', icon: ClipboardList },           // admin only (plan 008.1)
     { name: 'Settings', href: '/settings', icon: SettingsIcon },
   ];
 
@@ -40,8 +42,9 @@ const Sidebar = ({ isCollapsed, onToggleCollapse, onMobileClose }) => {
   // Presentation-only grouping (matches the reference layout's "Main Menu" /
   // "Others" sections). Does not change which items are shown — that's still
   // controlled entirely by filteredNavigation above.
-  const mainItems = filteredNavigation.filter(item => item.name !== 'Settings');
-  const otherItems = filteredNavigation.filter(item => item.name === 'Settings');
+  const otherNames = ['Survey', 'Settings'];
+  const mainItems = filteredNavigation.filter(item => !otherNames.includes(item.name));
+  const otherItems = filteredNavigation.filter(item => otherNames.includes(item.name));
 
   const handleLogout = async () => {
     try {
