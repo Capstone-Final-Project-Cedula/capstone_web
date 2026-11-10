@@ -27,3 +27,6 @@ yarn-error.log*
 
 graphify-out/
 .graphifyignore
+
+# Local run logs
+*.log
