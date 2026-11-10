@@ -1,7 +1,8 @@
 import apiClient from './client';
 
 // Evaluation mode (plan 003). Staff calls only write (a session id or ok comes back, nothing that was
-// logged); every other call is admin only on the backend and is used by the Evaluation page and Settings.
+// logged); every other call is admin only on the backend and is used by the Evaluation page (plan 009: the
+// switch and the round moved there from Settings).
 export const evalAPI = {
   // Staff
   consent: () => apiClient.get('/eval/consent'),
@@ -36,4 +37,12 @@ export const evalAPI = {
   exportCsv: (kind, params) => apiClient.get(`/eval/export/${kind}.csv`, { params, responseType: 'blob' }),
   deleteStatus: () => apiClient.get('/eval/delete-audio'),
   deleteAudioBatch: (size = 100) => apiClient.post('/eval/delete-audio', { confirm: true, size }),
+
+  // Plan 009: generated cards (the next card is the one the next session reads) and hand re-scoring.
+  getCards: () => apiClient.get('/eval/cards'),
+  generateCard: () => apiClient.post('/eval/cards'),
+  cardPdf: (cardId) => apiClient.get(`/eval/cards/${cardId}.pdf`, { responseType: 'blob' }),
+  saveHandScore: (answerId, reference, hypothesis) =>
+    apiClient.put(`/eval/answers/${answerId}/hand-score`, { reference, hypothesis }),
+  clearHandScore: (answerId) => apiClient.delete(`/eval/answers/${answerId}/hand-score`),
 };

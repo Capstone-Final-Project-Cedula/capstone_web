@@ -3,11 +3,12 @@ import { toast } from 'react-toastify';
 import { FlaskConical, Trash2 } from 'lucide-react';
 import Card, { CardBody } from '../ui/Card';
 import Button from '../ui/Button';
+import Badge from '../ui/Badge';
 import { evalAPI } from '../../api/eval';
 import { getApiErrorMessage } from '../../api/errors';
 
 const ROUND_TYPES = [
-  { value: 'practice', label: 'Practice' },
+  { value: 'practice', label: 'Practice (never counted)' },
   { value: 'scripted', label: 'Scripted test' },
   { value: 'uat', label: 'Real UAT' },
   { value: 'live', label: 'Live (normal days)' },
@@ -29,10 +30,9 @@ const Field = ({ label, children, hint }) => (
   </label>
 );
 
-// Settings → Evaluation (plan 003). The Settings page is admin only, and so is every call made here.
-const EvalSettingsCard = () => {
-  const [cfg, setCfg] = useState(null);
-  const [saving, setSaving] = useState(false);
+// Evaluation mode on/off, the round and "Delete evaluation audio now" (plan 003; on the Evaluation page since
+// plan 009). The page is admin only, and so is every call made here. `cfg` and `save` come from the page.
+const EvalSettingsCard = ({ cfg, saving, save }) => {
   const [pending, setPending] = useState(null);
   const [confirming, setConfirming] = useState(false);
   const [deleting, setDeleting] = useState(false);
@@ -41,25 +41,7 @@ const EvalSettingsCard = () => {
     .then(({ data }) => setPending(data.remaining))
     .catch(() => setPending(null)), []);
 
-  useEffect(() => {
-    evalAPI.getSettings()
-      .then(({ data }) => setCfg(data))
-      .catch((error) => toast.error(getApiErrorMessage(error, 'Could not load the evaluation settings')));
-    loadPending();
-  }, [loadPending]);
-
-  const save = async (changes, message) => {
-    setSaving(true);
-    try {
-      const { data } = await evalAPI.saveSettings(changes);
-      setCfg(data);
-      toast.success(message || 'Evaluation settings saved.');
-    } catch (error) {
-      toast.error(getApiErrorMessage(error, 'Could not save the evaluation settings'));
-    } finally {
-      setSaving(false);
-    }
-  };
+  useEffect(() => { loadPending(); }, [loadPending]);
 
   const deleteNow = async () => {
     setDeleting(true);
@@ -89,43 +71,46 @@ const EvalSettingsCard = () => {
   };
 
   if (!cfg) return null;
-  const scripted = cfg.round_type === 'scripted';
+  const on = cfg.evaluation_mode;
 
   return (
     <Card>
       <CardBody>
-        <div className="flex items-start gap-3 mb-6">
+        <div className="flex flex-wrap items-start gap-3 mb-5">
           <div className="w-10 h-10 rounded-[var(--radius-md)] bg-[var(--color-primary-light)] flex items-center justify-center shrink-0">
             <FlaskConical className="w-5 h-5 text-[var(--color-primary)]" aria-hidden="true" />
           </div>
-          <div className="min-w-0">
-            <h2 className="font-display text-base font-semibold text-[var(--color-neutral-800)]">Evaluation</h2>
+          <div className="min-w-0 flex-1">
+            <h2 className="font-display text-base font-semibold text-[var(--color-neutral-800)]">Evaluation mode</h2>
             <p className="text-sm text-[var(--color-neutral-500)] mt-1">
-              Logs every voice interview for Chapter 4. Staff never see this. Round {cfg.round_no}.
+              Staff never see this. Off only stops new logging and recording; past results stay on this page.
             </p>
           </div>
+          <Badge tone={on ? 'success' : 'neutral'} dot>{on ? 'ON' : 'OFF'}</Badge>
         </div>
 
         <div className="space-y-5">
           <label className="flex items-start gap-3">
             <input
               type="checkbox"
+              role="switch"
+              aria-checked={on}
               className="mt-1 h-4 w-4"
-              checked={cfg.evaluation_mode}
+              checked={on}
               disabled={saving}
               onChange={(e) => save({ evaluation_mode: e.target.checked },
-                e.target.checked ? 'Evaluation mode is on.' : 'Evaluation mode is off.')}
+                e.target.checked ? 'Evaluation mode is on.' : 'Evaluation mode is off. Past results are kept.')}
             />
             <span className="min-w-0">
-              <span className="block text-sm font-medium text-[var(--color-neutral-800)]">Evaluation mode</span>
+              <span className="block text-sm font-medium text-[var(--color-neutral-800)]">Log and record interviews</span>
               <span className="block text-xs text-[var(--color-neutral-500)] mt-0.5">
-                On: recordings are saved for the research team and the consent notice says so. Off: nothing is logged.
+                On: every voice interview is logged, its audio is saved for re-scoring and the consent notice says so.
               </span>
             </span>
           </label>
 
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-            <Field label="Testing round">
+            <Field label="Testing round" hint={`Round ${cfg.round_no}.`}>
               <select
                 className={selectClass}
                 value={cfg.round_type}
@@ -146,19 +131,10 @@ const EvalSettingsCard = () => {
               </select>
             </Field>
           </div>
-
-          {scripted && (
-            <Field label="Card set" hint="Volunteers read cards in order (P001 card 1, P002 card 2 ...), wrapping after the last.">
-              <select
-                className={selectClass}
-                value={cfg.card_set || ''}
-                disabled={saving}
-                onChange={(e) => save({ card_set: e.target.value || null }, 'New round started.')}
-              >
-                <option value="">All cards</option>
-                {(cfg.card_sets || []).map((name) => <option key={name} value={name}>{name}</option>)}
-              </select>
-            </Field>
+          {cfg.round_type === 'practice' && (
+            <p className="text-sm text-[var(--color-warning)] break-words" role="status">
+              This is a Practice round: new sessions are listed but never counted toward the evaluation.
+            </p>
           )}
 
           <div className="flex flex-wrap items-center gap-3">
@@ -170,14 +146,14 @@ const EvalSettingsCard = () => {
               Start a new round
             </Button>
             <span className="text-xs text-[var(--color-neutral-500)]">
-              Changing the type, condition or card set also starts a new round.
+              Changing the type or condition also starts a new round.
             </span>
           </div>
 
           <div className="pt-5 border-t border-[var(--color-neutral-100)]">
             <h3 className="text-sm font-semibold text-[var(--color-neutral-800)]">Delete evaluation audio now</h3>
             <p className="text-xs text-[var(--color-neutral-500)] mt-1 break-words">
-              Removes every saved recording and the text columns (transcripts, extracted and final values). The
+              Removes every saved recording and the text columns (transcripts, extracted, final and hand-scored text). The
               numbers (correct / incorrect, WER, times) stay. Nothing is ever deleted automatically.
               {pending !== null && ` ${pending} rows still hold audio or text.`}
             </p>
