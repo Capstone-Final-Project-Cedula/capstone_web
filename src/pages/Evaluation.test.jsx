@@ -162,6 +162,41 @@ describe('the Evaluation page (plan 009)', () => {
   });
 });
 
+describe('Codex verify round 1 (plan 009)', () => {
+  test('a card claimed from another tab is no longer shown when the admin comes back', async () => {
+    await renderPage();
+    expect(container.textContent).toContain('Card #3');
+    evalAPI.getCards.mockResolvedValue({ data: { next: card(4), waiting: 1, recent: [] } });
+    await act(async () => { window.dispatchEvent(new Event('focus')); });
+    expect(container.textContent).toContain('Card #4');
+    expect(container.textContent).not.toContain('Card #3');
+  });
+
+  test('Download PDF re-checks the queue and never prints a card that was just taken', async () => {
+    await renderPage();
+    evalAPI.getCards.mockResolvedValue({ data: { next: card(4), waiting: 1, recent: [] } });
+    await act(async () => button('Download PDF').click());
+    expect(evalAPI.cardPdf).not.toHaveBeenCalled();
+    expect(container.textContent).toContain('Card #4');
+  });
+
+  test('the hand score starts from the scored first try, not an "um" before it', async () => {
+    const detail = { ...SESSIONS[0], has_card: true, answers: [
+      { id: 4, field: 'surname', step: 'spoken', attempt_no: 0, engine: 'whisper', transcript: 'Um.', has_audio: true },
+      { id: 5, field: 'surname', step: 'spoken', attempt_no: 1, engine: 'whisper', transcript: 'Abarkes', has_audio: true },
+      { id: 9, field: 'surname', step: 'final', attempt_no: 0, card_read: 'Abarquez.', wer_errors: 1, wer_words: 1,
+        hand_words: null },
+    ] };
+    evalAPI.getSession.mockResolvedValue({ data: detail });
+    evalAPI.saveHandScore.mockResolvedValue({ data: {} });
+    await renderPage();
+    await act(async () => button('Open').click());
+    await act(async () => button('Hand score').click());
+    await act(async () => button('Save hand score').click());
+    expect(evalAPI.saveHandScore).toHaveBeenCalledWith(9, 'Abarquez.', 'Abarkes');
+  });
+});
+
 describe('staff see nothing of evaluation', () => {
   const sidebarLinks = async (role) => {
     mockUser.role = role;

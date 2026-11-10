@@ -20,7 +20,18 @@ const EvalCardPanel = ({ cfg, saving, save }) => {
     .then(({ data }) => setCards(data))
     .catch((error) => toast.error(getApiErrorMessage(error, 'Could not load the evaluation cards'))), []);
 
-  useEffect(() => { load(); }, [load]);
+  // An interview in another tab claims the card: reload when the admin comes back to this tab, so a claimed
+  // card is never shown as the next one (Codex verify round 1).
+  useEffect(() => {
+    load();
+    const onVisible = () => { if (document.visibilityState === 'visible') load(); };
+    window.addEventListener('focus', load);
+    document.addEventListener('visibilitychange', onVisible);
+    return () => {
+      window.removeEventListener('focus', load);
+      document.removeEventListener('visibilitychange', onVisible);
+    };
+  }, [load]);
 
   const generate = async () => {
     setBusy(true);
@@ -37,6 +48,14 @@ const EvalCardPanel = ({ cfg, saving, save }) => {
 
   const downloadPdf = async (cardId) => {
     try {
+      // Check the card is still the next one first: if it was claimed meanwhile, show the new next card instead.
+      const { data: fresh } = await evalAPI.getCards();
+      setCards(fresh);
+      if (fresh.next?.id !== cardId) {
+        toast.info(fresh.next ? `Card #${cardId} was just taken. Card #${fresh.next.id} is next now.`
+          : `Card #${cardId} was just taken. Generate a new card.`);
+        return;
+      }
       const { data } = await evalAPI.cardPdf(cardId);
       const url = URL.createObjectURL(data);
       const link = document.createElement('a');

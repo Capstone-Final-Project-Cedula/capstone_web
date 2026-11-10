@@ -22,7 +22,13 @@ const HandScorePanel = ({ detail, labels, onPlay, onSaved }) => {
   const [hypothesis, setHypothesis] = useState('');
   const [saving, setSaving] = useState(false);
 
-  const firstTry = (field) => detail.answers.find((a) => a.field === field && a.step === 'spoken' && a.engine === 'whisper');
+  // The try WER was counted on: the first counted spoken try (scoring numbers counted tries from 1 and leaves
+  // "um" / empty takes at 0), and only when Whisper heard it (Codex verify round 1).
+  const firstTry = (field) => {
+    const first = detail.answers.find((a) => a.field === field && a.step === 'spoken' && a.engine !== 'typed'
+      && a.attempt_no > 0);
+    return first?.engine === 'whisper' ? first : undefined;
+  };
   const hasParts = new Set(detail.answers.filter((a) => a.step === 'final').map((a) => a.field));
   const rows = detail.answers.filter((a) => a.step === 'final' && a.card_read
     && !(PARENTS.includes(a.field) && [...hasParts].some((f) => f.startsWith(`${a.field}_`))));
@@ -80,7 +86,11 @@ const HandScorePanel = ({ detail, labels, onPlay, onSaved }) => {
                 {heard?.has_audio && (
                   <Button size="sm" variant="ghost" icon={Play} onClick={() => onPlay(heard.id)}>Play</Button>
                 )}
-                <Button size="sm" variant="ghost" icon={Pencil} onClick={() => open(row)}>Hand score</Button>
+                {row.wer_words !== null && row.wer_words !== undefined ? (
+                  <Button size="sm" variant="ghost" icon={Pencil} onClick={() => open(row)}>Hand score</Button>
+                ) : (
+                  <span className="text-xs text-[var(--color-neutral-500)]">no Whisper first try: no WER</span>
+                )}
               </div>
             </div>
             {editing === row.id && (
