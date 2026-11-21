@@ -1122,7 +1122,7 @@ function useWhisperListener() {
       setIsListening(false);
       if (cancelled) return;
       if (!speechStart || lastVoice - speechStart < cfg.minSpeechMs) {
-        // Why it was empty, for the evaluation log (plan 002.2): nothing crossed the threshold, or too short.
+        // Why it was empty (plan 002.2): nothing crossed the threshold, or too short.
         onEnd?.('', { engine: 'whisper', reason: speechStart ? 'too-short' : 'browser-no-speech' });
         return;
       }
