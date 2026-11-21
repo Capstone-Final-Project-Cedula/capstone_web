@@ -41,8 +41,6 @@ import {
   REQUIRED_INTERVIEW_KEYS, endStepIndexes as endStepIndexesIn, isRequiredKey,
   missingRequiredIndexes as missingRequiredIn, parseMissingChoice,
 } from '../utils/endStep';
-import { createAttemptRecorder } from '../utils/attemptRecorder';
-import { createEvalSession, evalContext } from '../utils/evalLog';
 import { pickedCodes, pickerKind, unchangedPicks } from '../utils/pickers';
 import { Keyboard, Mic } from 'lucide-react';
 import Button from '../components/ui/Button';
@@ -721,19 +719,6 @@ const buildApplicantData = (answers) => {
 // validateFormData (the 6 required fields + income) lives in utils/requiredFields.js,
 // shared with the QR page and matching the server's 422 check (plan 001.4).
 
-// A question's answer in the form the CTC saves it
-// (the birthday as the ISO date ...), so the evaluation can compare it with the saved record.
-const SAVED_FIELD_OF = {
-  surname: 'surname', given_name: 'given_name', middle_name: 'middle_name', address: 'address',
-  date: 'date_of_birth', sex: 'sex', civil_status: 'civil_status', citizenship: 'citizenship',
-  icr_no: 'icr_number', place_of_birth: 'place_of_birth', height: 'height_cm', weight: 'weight_kg',
-  occupation: 'occupation', gross_annual_income: 'gross_annual_income',
-};
-const attemptSavedForm = (field, value) => {
-  const saved = SAVED_FIELD_OF[field];
-  if (!saved) return String(value ?? '').trim();          // an address part is never saved apart
-  return buildApplicantData({ [field]: value })[saved];
-};
 
 // ═══════════════════════════════════════════════════════════════
 // SECTION 5: PDF & Print Utilities
@@ -1197,7 +1182,6 @@ function useConversationEngine({
   setConfirmView,
   setMissingView,
   setAddressPart,
-  tracker,   // { session, rec }: the evaluation session and the attempt recorder
   notePick,   // plan 002.1: (key, value, meta) a value picked from a list, for its code at issue
 }) {
   const { isSpeaking, speak: rawSpeak, speakInOrder: rawSpeakInOrder, cancel: cancelSpeech } = useSpeechSynthesis();
@@ -1429,7 +1413,7 @@ function useConversationEngine({
     setStatusMessage(`Asking about your ${asked.label.toLowerCase()}`);
     addChatMessage('assistant', asked.question);
     speak(asked.question, () => listenForAnswer(fieldIndex));
-  }, [speak, clearConfirmView, setCurrentFieldIndex, setAddressPart, setDraftAnswer, setAwaitingConfirmation, setStatusMessage, setPhase, addChatMessage, tracker]);
+  }, [speak, clearConfirmView, setCurrentFieldIndex, setAddressPart, setDraftAnswer, setAwaitingConfirmation, setStatusMessage, setPhase, addChatMessage]);
 
   // Whisper -> (handleSpokenAnswer) DistilBERT + Regex -> voice read-back.
   const listenForAnswer = useCallback((fieldIndex) => {
@@ -1477,7 +1461,7 @@ function useConversationEngine({
         handleSpokenAnswer(fieldIndex, heard, meta);
       },
     });
-  }, [listenOnce, speak, setDraftAnswer, setVoiceError, setStatusMessage, setPhase, tracker]);
+  }, [listenOnce, speak, setDraftAnswer, setVoiceError, setStatusMessage, setPhase]);
 
   // Save a confirmed answer and go to the next question.
   const acceptAnswer = useCallback((fieldIndex, result) => {
@@ -1523,7 +1507,7 @@ function useConversationEngine({
     addChatMessage('assistant', `${field.label}: ${result.display || result.value || 'none'}`);
     setStatusMessage('Next question...');
     moveToNextQuestion();
-  }, [saveSpokenAnswer, moveToNextQuestion, askQuestion, clearConfirmView, setStatusMessage, setAddressPart, addChatMessage, tracker]);
+  }, [saveSpokenAnswer, moveToNextQuestion, askQuestion, clearConfirmView, setStatusMessage, setAddressPart, addChatMessage]);
 
   // The ladder is used up (plan 002.2): leave the field blank for now. Before the final "yes" every
   // skipped question is asked for again (say it or type it). If speaking fails again on that second
@@ -1548,7 +1532,7 @@ function useConversationEngine({
     const msg = `Let's skip your ${spokenLabel(field)} for now. We will come back to it at the end.`;
     addChatMessage('assistant', msg);
     speak(msg, moveToNextQuestion);
-  }, [speak, moveToNextQuestion, clearConfirmView, setAddressPart, addChatMessage, tracker]);
+  }, [speak, moveToNextQuestion, clearConfirmView, setAddressPart, addChatMessage]);
 
 
   // "Go back", "go back to my address", "change my surname": ask that question again,
@@ -1724,7 +1708,7 @@ function useConversationEngine({
         }
       },
     });
-  }, [listenOnce, speak, acceptAnswer, fixAnswer, skipField, setPhase, setStatusMessage, setVoiceError, addChatMessage, tracker]);
+  }, [listenOnce, speak, acceptAnswer, fixAnswer, skipField, setPhase, setStatusMessage, setVoiceError, addChatMessage]);
 
   // ── Letter-by-letter spelling (the fallback) ──
   // One turn: the applicant spells, and as soon as they pause the assistant reads the
@@ -1792,7 +1776,7 @@ function useConversationEngine({
         finishSpelling(fieldIndex, { heardBy: meta });
       },
     });
-  }, [listenOnce, speak, stopConversation, setVoiceError, setDraftAnswer, setPhase, setStatusMessage, addChatMessage, tracker]);
+  }, [listenOnce, speak, stopConversation, setVoiceError, setDraftAnswer, setPhase, setStatusMessage, addChatMessage]);
 
   // `typed`: the applicant (or staff) typed the correction on screen, so it is saved
   // without another "is that correct?". `heardBy`: the recorder's meta of spoken letters (timing line).
@@ -1876,7 +1860,7 @@ function useConversationEngine({
       return;
     }
     confirmAnswer(fieldIndex, kept);
-  }, [speak, confirmAnswer, acceptAnswer, setConfirmView, addChatMessage, tracker]);
+  }, [speak, confirmAnswer, acceptAnswer, setConfirmView, addChatMessage]);
 
   // The Yes / No buttons and the type-it box on the confirmation panel. A tap ends the
   // voice turn in progress (speech and listening), then continues like a spoken reply.
@@ -1926,7 +1910,7 @@ function useConversationEngine({
         speak(result.message, () => listenForAnswer(fieldIndex));
       }, { counted, intro });
     }
-  }, [speak, askQuestion, confirmAnswer, listenForAnswer, setPhase, setStatusMessage, addChatMessage, tracker]);
+  }, [speak, askQuestion, confirmAnswer, listenForAnswer, setPhase, setStatusMessage, addChatMessage]);
 
   const handleSpokenAnswer = useCallback(async (fieldIndex, transcript, heardBy = {}) => {
     const asked = askedOf(addressRef.current, birthRef.current, fieldIndex);   // the field, or the address part being asked
@@ -2010,7 +1994,7 @@ function useConversationEngine({
       return;
     }
     confirmAnswer(fieldIndex, result);
-  }, [speak, askQuestion, acceptAnswer, confirmAnswer, handleBirthResult, stopConversation, setVoiceError, setStatusMessage, setPhase, addChatMessage, tracker]);
+  }, [speak, askQuestion, acceptAnswer, confirmAnswer, handleBirthResult, stopConversation, setVoiceError, setStatusMessage, setPhase, addChatMessage]);
 
   // Get the microphone and switch the conversation on. Returns false when voice cannot run.
   const activateVoice = useCallback(async () => {
@@ -2094,7 +2078,7 @@ function useConversationEngine({
     const prompt = `I still need your ${spokenLabel(field)}. Would you like to say it or type it?${optional ? ' You can also leave it blank.' : ''}`;
     addChatMessage('assistant', prompt);
     speak(prompt, () => latestRef.current.listenForMissingChoice(fieldIndex));
-  }, [speak, clearConfirmView, setStep, setAwaitingConfirmation, setCurrentFieldIndex, setMissingView, setPhase, setStatusMessage, addChatMessage, tracker]);
+  }, [speak, clearConfirmView, setStep, setAwaitingConfirmation, setCurrentFieldIndex, setMissingView, setPhase, setStatusMessage, addChatMessage]);
 
   // The text box for one field. `auto`: speaking failed again, so it opened on its own
   // and "Say it again" is no longer offered (no endless loop).
@@ -2118,7 +2102,7 @@ function useConversationEngine({
       : `Okay. Please type your ${spokenLabel(field)} in the box on the screen.`;
     addChatMessage('assistant', msg);
     speak(msg);   // no listening: the applicant is typing
-  }, [speak, clearConfirmView, stopBrowserListening, setStep, setAwaitingConfirmation, setCurrentFieldIndex, setMissingView, setPhase, setStatusMessage, addChatMessage, tracker]);
+  }, [speak, clearConfirmView, stopBrowserListening, setStep, setAwaitingConfirmation, setCurrentFieldIndex, setMissingView, setPhase, setStatusMessage, addChatMessage]);
 
   // "Say it again": the normal question with its normal retries, then back to the review.
   const sayMissingAgain = useCallback((fieldIndex) => {
@@ -2177,7 +2161,7 @@ function useConversationEngine({
     setMissingView(null);
     addChatMessage('assistant', `${field.label}: left blank`);
     latestRef.current.startVoiceReview();
-  }, [setMissingView, addChatMessage, tracker]);
+  }, [setMissingView, addChatMessage]);
 
   // A typed answer is checked by the same /api/extraction rules as a spoken one.
   const submitMissingTyped = useCallback(async (fieldIndex, text, meta = {}) => {
@@ -2215,7 +2199,7 @@ function useConversationEngine({
     pendingMissingRef.current = null;
     setMissingView(null);
     latestRef.current.startVoiceReview();
-  }, [speak, saveSpokenAnswer, setMissingView, addChatMessage, tracker, notePick]);
+  }, [speak, saveSpokenAnswer, setMissingView, addChatMessage, notePick]);
 
   // The Type it / Say it again buttons and the text box. A tap ends the voice turn in progress.
   const tapMissing = useCallback((choice, typedValue = '', meta = {}) => {
@@ -2863,18 +2847,9 @@ const NewApplication = () => {
   const inputRef = useRef(null);
   const speechAudioRef = useRef(null);
   const speechSequenceRef = useRef(0);
-  // The evaluation session and the attempt recorder live as long as the page.
   // Plan 002.1: values picked from a list, { key: { value, meta } }; their codes go with /forms/issue.
   const pickedRef = useRef({});
   const notePick = useCallback((key, value, meta = {}) => { pickedRef.current[key] = { value, meta }; }, []);
-  const trackerRef = useRef(null);
-  if (!trackerRef.current) {
-    trackerRef.current = {
-      session: createEvalSession(evalAPI, evalContext),
-      rec: createAttemptRecorder({ savedForm: attemptSavedForm }),
-    };
-  }
-  const tracker = trackerRef.current;
 
   // ── Memoized Values ──
   const currentField = INTERVIEW_FIELDS[currentFieldIndex];
@@ -2905,24 +2880,16 @@ const NewApplication = () => {
     }
   }, [chatHistory, statusMessage]);
 
-  // Closing or reloading the tab does not unmount React, so finish on pagehide too.
-  useEffect(() => {
-    const onPageHide = () => tracker.session.finish({ keepalive: true });
-    window.addEventListener('pagehide', onPageHide);
-    return () => window.removeEventListener('pagehide', onPageHide);
-  }, [tracker]);
-
   // ── Cleanup on unmount ──
   useEffect(() => {
     return () => {
-      tracker.session.finish();   // leaving before the CTC is issued: the evaluation session is "abandoned"
       speechSequenceRef.current += 1;
       window.speechSynthesis?.cancel();
       speechAudioRef.current?.pause();
       recognitionRef.current?.abort?.();
       streamRef.current?.getTracks().forEach((t) => t.stop());
     };
-  }, [tracker]);
+  }, []);
 
   // ── Chat Helpers ──
   const addChatMessage = useCallback((role, text) => {
@@ -3280,13 +3247,11 @@ const NewApplication = () => {
         applicant_data: formData,
         input_method: inputMethod,
         raw_transcript: null,
-        ...(tracker.session.id ? { eval_session_id: tracker.session.id, eval_batch: tracker.session.batch() } : {}),
       };
 
       const result = await formsAPI.issue(payload);
       const issuedCtc = result.data?.ctc_number;
       if (!issuedCtc) throw new Error('The server did not return a CTC number.');
-      tracker.session.issued();   // the backend ended the evaluation session; late notes still go out
 
       // Saved with its CTC number and PDF, but nothing is downloaded or printed here:
       // the admin prints it at the counter from Records (plan 001.3).
@@ -3320,11 +3285,10 @@ const NewApplication = () => {
       setIsIssuing(false);
       setStatusMessage('Ready');
     }
-  }, [speakText, inputMethod, tracker]);
+  }, [speakText, inputMethod]);
 
   // ── Reset ──
   const resetInterview = useCallback(() => {
-    tracker.session.finish();   // no-op when the CTC was issued
     pickedRef.current = {};
     setStep('interview');
     setCurrentFieldIndex(0);
@@ -3342,7 +3306,7 @@ const NewApplication = () => {
     setVoiceError('');
     window.speechSynthesis?.cancel();
     speechAudioRef.current?.pause();
-  }, [tracker]);
+  }, []);
 
   // ── Conversation Engine Hook ──
   const {
@@ -3369,7 +3333,6 @@ const NewApplication = () => {
     setConfirmView,
     setMissingView,
     setAddressPart,
-    tracker,
     notePick,
   });
 
@@ -3637,7 +3600,6 @@ const NewApplication = () => {
         recording={recordingSaved}
         onAgree={() => {
           setConsentGiven(true);
-          tracker.session.start('manual');   // answers "off" unless evaluation mode is on
         }}
         speak={speakText}
         stopSpeaking={stopSpeakText}
