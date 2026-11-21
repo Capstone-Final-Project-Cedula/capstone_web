@@ -20,7 +20,6 @@ import {
 import { speechAPI } from '../api/speech';
 import { extractionAPI } from '../api/extraction';
 import { formsAPI } from '../api/forms';
-import { evalAPI } from '../api/eval';
 import apiClient from '../api/client';
 import { getApiErrorMessage } from '../api/errors';
 import LoadingSpinner from '../components/common/LoadingSpinner';
@@ -2828,15 +2827,6 @@ const NewApplication = () => {
   const [fieldError, setFieldError] = useState('');      // why the current answer was not accepted
   const [reviewErrors, setReviewErrors] = useState({});   // per-field problems found before issuing
   const [consentGiven, setConsentGiven] = useState(false); // privacy notice accepted for this applicant
-  // Evaluation mode (plan 003): is the recording saved? Unknown (server unreachable) is treated as saved, so the
-  // notice never says "not saved" when it might be; a backend without evaluation mode (404) saves nothing.
-  const [recordingSaved, setRecordingSaved] = useState(true);
-  useEffect(() => {
-    if (consentGiven) return;
-    Promise.resolve().then(() => evalAPI.consent())
-      .then(({ data }) => setRecordingSaved(Boolean(data?.recording)))
-      .catch((error) => { if (error?.response?.status === 404) setRecordingSaved(false); });
-  }, [consentGiven]);
 
   // ── Refs ──
   const mediaRecorderRef = useRef(null);
@@ -3597,7 +3587,6 @@ const NewApplication = () => {
       {isIssuing && <IssuingOverlay message={statusMessage} />}
       <ConsentNotice
         open={!consentGiven}
-        recording={recordingSaved}
         onAgree={() => {
           setConsentGiven(true);
         }}
