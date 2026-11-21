@@ -11,7 +11,6 @@ jest.mock('../api/speech', () => ({ speechAPI: { transcribe: jest.fn() } }));
 jest.mock('../components/interview/ConsentNotice', () => ({ open, onAgree }) => (
   open ? <button onClick={onAgree}>Agree for test</button> : null
 ));
-jest.mock('../components/sus/SusSurveyDialog', () => () => null);
 
 window.IS_REACT_ACT_ENVIRONMENT = true;
 

@@ -24,7 +24,6 @@ import { evalAPI } from '../api/eval';
 import apiClient from '../api/client';
 import { getApiErrorMessage } from '../api/errors';
 import LoadingSpinner from '../components/common/LoadingSpinner';
-import SusSurveyDialog from '../components/sus/SusSurveyDialog';
 import ConsentNotice from '../components/interview/ConsentNotice';
 import AnswerPicker from '../components/interview/AnswerPicker';
 import { combineSpelling, looksSpelled, titleCaseSpelled } from '../utils/spelling';
@@ -2323,7 +2322,7 @@ function useConversationEngine({
       if (conversationActiveRef.current) startVoiceReview();
       return;
     }
-    // 'issued' (survey and counter line next), 'review' (moved to the manual review page,
+    // 'issued' (counter line next), 'review' (moved to the manual review page,
     // which was said aloud) or 'auth' (login expired): the conversation is over.
     endConversation();
   }, [speakNext, endConversation, startVoiceReview, setAwaitingConfirmation, setStatusMessage, setPhase, addChatMessage]);
@@ -2862,8 +2861,6 @@ const NewApplication = () => {
   const [currentFieldIndex, setCurrentFieldIndex] = useState(0);
   const [answers, setAnswers] = useState({});
   const [draftAnswer, setDraftAnswer] = useState('');
-  // Usability survey offered after the CTC is issued
-  const [survey, setSurvey] = useState({ open: false, transactionId: null, features: [] });
   const [awaitingConfirmation, setAwaitingConfirmation] = useState(false);
   // { mode: 'confirm' | 'spelling', label, value, letters, canSpell } while an answer is checked
   const [confirmView, setConfirmView] = useState(null);
@@ -3241,7 +3238,7 @@ const NewApplication = () => {
 
   // ── Issue Form ──
   // Returns what happened, so the voice conversation knows what to do next:
-  //   'issued'  — saved; survey and counter line follow (nothing is printed here)
+  //   'issued'  — saved; the counter line follows (nothing is printed here)
   //   'missing' — a required answer is blank (voice: the conversation asks for it)
   //   'review'  — stopped; moved to the manual review page and said so
   //   'auth'    — login expired; the API client goes to the login page
@@ -3334,13 +3331,6 @@ const NewApplication = () => {
       // Saved with its CTC number and PDF, but nothing is downloaded or printed here:
       // the admin prints it at the counter from Records (plan 001.3).
       toast.success('Application saved.');
-      setSurvey({
-        open: true,
-        transactionId: result.data?.id ?? null,
-        features: inputMethod === 'voice'
-          ? ['voice_input', 'voice_feedback', 'form_generation']
-          : ['form_generation'],
-      });
       setStep('success');
       setPhase(PHASE.IDLE);
       tell(COUNTER_LINE);
@@ -3385,7 +3375,6 @@ const NewApplication = () => {
     setFieldError('');
     setReviewErrors({});
     setConsentGiven(false);   // the next applicant sees the privacy notice again
-    setSurvey({ open: false, transactionId: null, features: [] });
     setAwaitingConfirmation(false);
     setConfirmView(null);
     setMissingView(null);
@@ -3457,7 +3446,7 @@ const NewApplication = () => {
   // ═══════════════════════════════════════════════════════════════
   if (step === 'success') {
     // No CTC number here: at the counter the applicant only gives their name, and the
-    // admin prints the Cedula from Records. The line stays after the survey closes.
+    // admin prints the Cedula from Records.
     return (
       <div className="max-w-lg mx-auto">
         <Card accent="success" className="p-8 sm:p-10 text-center">
@@ -3477,12 +3466,6 @@ const NewApplication = () => {
             </Button>
           </div>
         </Card>
-        <SusSurveyDialog
-          open={survey.open}
-          transactionId={survey.transactionId}
-          defaultFeatures={survey.features}
-          onClose={() => setSurvey((s) => ({ ...s, open: false }))}
-        />
       </div>
     );
   }

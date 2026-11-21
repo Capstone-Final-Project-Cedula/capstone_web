@@ -12,8 +12,6 @@ import Records from './pages/Records';
 import AccessLog from './pages/AccessLog';
 import StaffManagement from './pages/StaffManagement';
 import Settings from './pages/Settings';
-import SusSurveyPage from './pages/SusSurveyPage';
-import SurveyPage from './pages/SurveyPage';
 import LoadingSpinner from './components/common/LoadingSpinner';
 
 // Evaluation mode (plan 003): admin only, and loaded on demand so it is not in the staff bundle.
@@ -36,8 +34,6 @@ const AppRoutes = () => {
   return (
     <Routes>
       <Route path="/login" element={<Login />} />
-      {/* Public usability survey, e.g. opened from a printed QR code */}
-      <Route path="/sus" element={<SusSurveyPage />} />
       <Route path="/" element={<ProtectedRoute><Layout /></ProtectedRoute>}>
         <Route index element={<Navigate to="/new-application" replace />} />
         <Route path="dashboard" element={<ProtectedRoute adminOnly><Dashboard /></ProtectedRoute>} />
@@ -54,7 +50,6 @@ const AppRoutes = () => {
           )}
         />
         <Route path="staff" element={<ProtectedRoute adminOnly><StaffManagement /></ProtectedRoute>} />
-        <Route path="survey" element={<ProtectedRoute adminOnly><SurveyPage /></ProtectedRoute>} />
         <Route path="settings" element={<ProtectedRoute adminOnly><Settings /></ProtectedRoute>} />
       </Route>
     </Routes>
