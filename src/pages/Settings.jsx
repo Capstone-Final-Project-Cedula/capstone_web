@@ -198,7 +198,6 @@ const Settings = () => {
               </div>
             </Card>
 
-
             <Card className="p-5 bg-[var(--color-primary-light)] border-[rgba(59,75,196,0.16)]">
               <div className="flex gap-3">
                 <div className="w-9 h-9 rounded-[var(--radius-md)] bg-white/80 flex items-center justify-center shrink-0">
