@@ -218,8 +218,6 @@ const attemptKeyOf = (address, fieldIndex, birth = BIRTH_IDLE) => {
 const askedOf = (address, birth, fieldIndex) => (isBirthStepOf(birth, fieldIndex)
   ? birthQuestion(birth)
   : questionOf(address, fieldIndex));
-// The evaluation log keeps one row per field: every place-of-birth step is noted as `place_of_birth`.
-const logKeyOf = (asked) => asked.logKey || asked.key;
 // Spelling is for the spellable fields, never an address part.
 const canSpellAt = (address, fieldIndex) => SPELLABLE_KEYS.has(INTERVIEW_FIELDS[fieldIndex].key) && !isAddressPartOf(address, fieldIndex);
 // One try without an accepted answer on the question being asked (plan 002.2): 'again', 'spell' or 'skip'.
@@ -1146,11 +1144,11 @@ function useWhisperListener() {
       }
       onTranscribing?.();
       try {
-        const recording = new Blob(chunks, { type: mimeType || 'audio/webm' });   // kept as it is for evaluation mode
+        const recording = new Blob(chunks, { type: mimeType || 'audio/webm' });
         const wav = await convertRecordingToWav(recording);
         const file = new File([wav], 'answer.wav', { type: 'audio/wav' });
         const t0 = performance.now();
-        const { data } = await speechAPI.transcribe(file, fieldKey, { timeout: 20000, town, province, clip: recording });
+        const { data } = await speechAPI.transcribe(file, fieldKey, { timeout: 20000, town, province });
         onEnd?.((data.transcript || '').trim(), {
           engine: 'whisper',
           seconds: Math.round((performance.now() - t0) / 100) / 10,
@@ -1420,8 +1418,6 @@ function useConversationEngine({
       birthRef.current = startBirth();   // always the province (or city) question first
     }
     const asked = askedOf(addressRef.current, birthRef.current, fieldIndex);
-    tracker.rec.asked(logKeyOf(asked));   // the clock starts at the first ask only
-    evalContext.ask(asked.key);            // evaluation mode: which question (or place / address step) is being asked
     clearConfirmView();
     currentFieldIndexRef.current = fieldIndex;
     setCurrentFieldIndex(fieldIndex);
@@ -1470,7 +1466,6 @@ function useConversationEngine({
           return;
         }
         if (meta.error) {
-          tracker.rec.heard(logKeyOf(asked), { text: '', engine: meta.engine, reason: meta.error });
           if (isBirthStepOf(birthRef.current, fieldIndex)) {   // one miss budget per place-of-birth step
             latestRef.current.handleBirthResult(fieldIndex, { ok: false, reason: meta.error, message: 'Sorry, I had trouble hearing that. Please say it again.' });
             return;
@@ -1502,7 +1497,6 @@ function useConversationEngine({
       // One part of the address confirmed: ask the next part, or join the three into the address.
       const address = addressRef.current;
       const part = ADDRESS_PARTS[address.part];
-      tracker.session.note(tracker.rec.accept(part.key, result.value));
       resetLadder(part.key);
       address.results[part.key] = result;
       clearConfirmView();
@@ -1520,9 +1514,6 @@ function useConversationEngine({
       setAddressPart(null);
       result = { ...result, value: joined, display: joined };
     }
-    tracker.session.note(field.key === 'address'
-      ? tracker.rec.joined(result.value)
-      : tracker.rec.accept(field.key, result.value, result.picked ? 'typed' : undefined));   // a tapped place: on screen
     if (field.key === 'place_of_birth') birthRef.current = BIRTH_IDLE;
     resetLadder(fieldIndex);
     skippedRef.current.delete(fieldIndex);
@@ -1539,7 +1530,6 @@ function useConversationEngine({
   // round, the text box opens on its own (plan 001.3), so nothing loops.
   const skipField = useCallback((fieldIndex) => {
     const field = INTERVIEW_FIELDS[fieldIndex];
-    tracker.session.note(tracker.rec.skip(logKeyOf(askedOf(addressRef.current, birthRef.current, fieldIndex))));   // before the address resets
     resetLadder(fieldIndex);
     skippedRef.current.add(fieldIndex);
     spelledRef.current = '';
@@ -1772,17 +1762,12 @@ function useConversationEngine({
       onEnd: (heard, meta) => {
         if (!conversationActiveRef.current || turn !== confirmTurnRef.current) return;
         const reply = heard.trim();
-        const key = INTERVIEW_FIELDS[fieldIndex].key;
-        // Each turn below is one spelled try (plan 002.2), noted with why it gave no letters.
-        const noted = (reason) => tracker.rec.heard(key, { text: reply, engine: meta?.engine || 'whisper', seconds: meta?.seconds, reason });
         if (!reply) {
-          noted(meta?.reason || meta?.error || 'no-speech');
           latestRef.current.missAndContinue(fieldIndex, () => {}, { intro: 'I did not hear any letters.' });
           return;
         }
         if (isFillerOnly(reply)) {
           // "Um." while spelling is not a spelled try (plan 006): ask for the letters again; after 3 in a row pause.
-          noted('filler');
           if (noteNonAnswer(`spell-${fieldIndex}`) >= NON_ANSWER_LIMIT) {
             stopConversation();
             setVoiceError('I did not hear any letters. Press Start Conversation to continue, or type it.');
@@ -1795,13 +1780,11 @@ function useConversationEngine({
         addChatMessage('user', reply);
         if (isNoReply(reply) && !looksSpelled(reply)) {
           // "Oh no" while spelling is a refusal, not the letters O, N, O (Codex verify, plan 002.2).
-          noted('refused');
           latestRef.current.missAndContinue(fieldIndex, () => {}, { intro: "Okay. Let's spell it once more." });
           return;
         }
         spelledRef.current = combineSpelling(spelledRef.current, reply);
         if (!spelledRef.current.trim()) {
-          noted('no-letters');   // "done", "space": nothing to read back
           latestRef.current.missAndContinue(fieldIndex, () => {}, { intro: 'I did not hear any letters.' });
           return;
         }
@@ -1842,7 +1825,6 @@ function useConversationEngine({
     }
     if (!conversationActiveRef.current || turn !== confirmTurnRef.current) return;
     if (!typed) logAnswerTiming(field.key, heardBy);   // every branch below puts the answer on screen now
-    tracker.rec.heard(field.key, { text: letters, engine: typed ? 'typed' : 'spelled' });
     if (birthSpelled) {
       // The step's own read-back (province, town, or a whole place); a miss is a spelled try of that step.
       latestRef.current.handleBirthResult(fieldIndex, result.reason === 'unclear' ? { ...result, ok: false, reason: 'invalid' } : result, {
@@ -1851,7 +1833,6 @@ function useConversationEngine({
       });
       return;
     }
-    tracker.rec.parsed(field.key, result);
     // "Sorry" / "What?" while spelling a place is not a place either (only names keep the unclear pass).
     if (!result.ok && (result.reason !== 'unclear' || field.key === 'place_of_birth')) {
       if (typed) {
@@ -1924,13 +1905,11 @@ function useConversationEngine({
   // whole place, then skip. `counted`: the ladder's step already decided at "is that correct?".
   const handleBirthResult = useCallback((fieldIndex, result, { counted = null, intro = '' } = {}) => {
     if (result.reason === 'unclear') {   // "What?" / "Pakiulit": the question again, not a miss
-      tracker.rec.parsed('place_of_birth', result, { partial: true });
       speak(result.message, () => askQuestion(fieldIndex));
       return;
     }
     const { birth, action, result: shown = result } = onBirthResult(birthRef.current, result);
     birthRef.current = birth;
-    tracker.rec.parsed('place_of_birth', result, { partial: action !== 'confirm' });
     if (action === 'province' || action === 'confirm') {
       // Each match is read back before the next step (plan 006): "Bukidnon. Is that correct?" asks the town after a yes.
       confirmAnswer(fieldIndex, shown);
@@ -1952,16 +1931,8 @@ function useConversationEngine({
   const handleSpokenAnswer = useCallback(async (fieldIndex, transcript, heardBy = {}) => {
     const asked = askedOf(addressRef.current, birthRef.current, fieldIndex);   // the field, or the address part being asked
     const spokenValue = transcript.trim();
-    // One try = what was heard, by which engine, and the Whisper seconds.
-    const recordHeard = () => tracker.rec.heard(logKeyOf(asked), {
-      text: spokenValue,
-      engine: heardBy.engine || engineRef.current,
-      seconds: heardBy.seconds,
-      reason: spokenValue ? null : (heardBy.reason || 'no-speech'),
-    });
 
     if (!spokenValue) {
-      recordHeard();
       if (isBirthStepOf(birthRef.current, fieldIndex)) {   // silence is a miss of the step, like a wrong answer
         handleBirthResult(fieldIndex, { ok: false, reason: 'empty', message: pickRandom(RETRY_PHRASES) });
         return;
@@ -1976,7 +1947,6 @@ function useConversationEngine({
 
     if (spokenValue && !heardBy.shown) addChatMessage('user', spokenValue);
     if (spokenValue && handleNavigation(spokenValue, fieldIndex)) return;   // "go back to my surname"
-    recordHeard();
     if (isFillerOnly(spokenValue)) {
       // "Um." is not an answer and not a try (plan 006): ask again; after 3 in a row the listening pauses.
       if (noteNonAnswer(`ask-${attemptKeyOf(addressRef.current, fieldIndex, birthRef.current)}`) >= NON_ANSWER_LIMIT) {
@@ -2013,7 +1983,6 @@ function useConversationEngine({
       handleBirthResult(fieldIndex, result, { counted });
       return;
     }
-    tracker.rec.parsed(asked.key, result);
 
     if (!result.ok && result.reason === 'unclear') {
       // "What?" / "Pakiulit": the whole question again, not a try.
@@ -2110,9 +2079,6 @@ function useConversationEngine({
   const askMissingField = useCallback((fieldIndex) => {
     const field = INTERVIEW_FIELDS[fieldIndex];
     const optional = !isRequiredKey(field.key);
-    tracker.rec.endStep();   // plan 002.2: tries from here on are "finished at the end step"
-    evalContext.endStep();
-    evalContext.ask(field.key);
     missingTurnRef.current += 1;
     pendingMissingRef.current = fieldIndex;
     clearConfirmView();
@@ -2134,8 +2100,6 @@ function useConversationEngine({
   // and "Say it again" is no longer offered (no endless loop).
   const openMissingTyping = useCallback((fieldIndex, { auto = false } = {}) => {
     const field = INTERVIEW_FIELDS[fieldIndex];
-    tracker.rec.asked(field.key);   // typing a missing answer is timed from here
-    evalContext.ask(field.key);
     missingTurnRef.current += 1;
     pendingMissingRef.current = fieldIndex;
     clearConfirmView();
@@ -2205,7 +2169,6 @@ function useConversationEngine({
   const leaveMissingBlank = useCallback((fieldIndex) => {
     const field = INTERVIEW_FIELDS[fieldIndex];
     if (isRequiredKey(field.key)) return;
-    tracker.session.note(tracker.rec.leaveBlank(field.key));
     skippedRef.current.delete(fieldIndex);
     missingRetryRef.current.delete(fieldIndex);
     resetLadder(fieldIndex);
@@ -2244,9 +2207,6 @@ function useConversationEngine({
       : result.value;
     addChatMessage('user', typed);
     addChatMessage('assistant', `${field.label}: ${SPELLABLE_KEYS.has(field.key) ? value : (result.display || value)}`);
-    tracker.rec.heard(field.key, { text: typed, engine: 'typed' });
-    tracker.rec.parsed(field.key, result);
-    tracker.session.note(tracker.rec.accept(field.key, value, 'typed'));
     notePick(field.key, typed, meta);   // its list code goes to /forms/issue only while the answer is still this
     saveSpokenAnswer(fieldIndex, value);
     resetLadder(fieldIndex);
@@ -3365,8 +3325,6 @@ const NewApplication = () => {
   // ── Reset ──
   const resetInterview = useCallback(() => {
     tracker.session.finish();   // no-op when the CTC was issued
-    tracker.rec.reset();
-    evalContext.reset();
     pickedRef.current = {};
     setStep('interview');
     setCurrentFieldIndex(0);
@@ -3679,8 +3637,6 @@ const NewApplication = () => {
         recording={recordingSaved}
         onAgree={() => {
           setConsentGiven(true);
-          tracker.rec.reset();
-          evalContext.reset();
           tracker.session.start('manual');   // answers "off" unless evaluation mode is on
         }}
         speak={speakText}
