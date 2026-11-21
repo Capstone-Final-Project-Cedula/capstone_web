@@ -12,7 +12,7 @@ React 19 (Create React App / react-scripts 5), React Router 6, Tailwind 3 + desi
 - Build check: `npm run build`
 
 ## Map
-- `src/App.jsx` routes: /login, /sus (public), /dashboard (admin), /new-application, /qr-scan, /records,
+- `src/App.jsx` routes: /login, /dashboard (admin), /new-application, /qr-scan, /records,
   /staff (admin), /settings (admin)
 - `src/pages/` — `NewApplication.jsx` is the voice interview page (3,000+ lines: change it in small, tested steps)
 - `src/components/ui/` reusable Button, Card, Input, Badge, EmptyState, Skeleton
