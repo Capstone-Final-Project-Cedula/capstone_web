@@ -8,7 +8,6 @@ jest.mock('../api/client', () => ({ __esModule: true, default: { post: jest.fn()
 jest.mock('../api/extraction', () => ({ extractionAPI: {} }));
 jest.mock('../api/speech', () => ({ speechAPI: {} }));
 jest.mock('../components/interview/ConsentNotice', () => () => null);
-jest.mock('../components/sus/SusSurveyDialog', () => () => null);
 
 window.IS_REACT_ACT_ENVIRONMENT = true;
 

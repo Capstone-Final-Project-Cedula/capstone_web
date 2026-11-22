@@ -38,8 +38,8 @@ apiClient.interceptors.response.use(
     if (error.response?.status === 401 && !isLoginRequest) {
       localStorage.removeItem('access_token');
       localStorage.removeItem('user');
-      // Public pages (login, the /sus survey) stay put; only the expired login is cleared.
-      if (!['/login', '/sus'].includes(window.location.pathname)) {
+      // The login page stays put; only the expired login is cleared.
+      if (window.location.pathname !== '/login') {
         window.location.href = '/login';
       }
     }

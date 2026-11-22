@@ -1,4 +1,4 @@
-import React, { Suspense, lazy } from 'react';
+import React from 'react';
 import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-dom';
 import { ToastContainer } from 'react-toastify';
 import 'react-toastify/dist/ReactToastify.css';
@@ -12,12 +12,7 @@ import Records from './pages/Records';
 import AccessLog from './pages/AccessLog';
 import StaffManagement from './pages/StaffManagement';
 import Settings from './pages/Settings';
-import SusSurveyPage from './pages/SusSurveyPage';
-import SurveyPage from './pages/SurveyPage';
 import LoadingSpinner from './components/common/LoadingSpinner';
-
-// Evaluation mode (plan 003): admin only, and loaded on demand so it is not in the staff bundle.
-const Evaluation = lazy(() => import('./pages/Evaluation'));
 
 const ProtectedRoute = ({ children, adminOnly = false }) => {
   const { isAuthenticated, loading, isAdmin } = useAuth();
@@ -36,8 +31,6 @@ const AppRoutes = () => {
   return (
     <Routes>
       <Route path="/login" element={<Login />} />
-      {/* Public usability survey, e.g. opened from a printed QR code */}
-      <Route path="/sus" element={<SusSurveyPage />} />
       <Route path="/" element={<ProtectedRoute><Layout /></ProtectedRoute>}>
         <Route index element={<Navigate to="/new-application" replace />} />
         <Route path="dashboard" element={<ProtectedRoute adminOnly><Dashboard /></ProtectedRoute>} />
@@ -45,16 +38,7 @@ const AppRoutes = () => {
         <Route path="qr-scan" element={<QRScan />} />
         <Route path="records" element={<ProtectedRoute adminOnly><Records /></ProtectedRoute>} />
         <Route path="access-log" element={<ProtectedRoute adminOnly><AccessLog /></ProtectedRoute>} />
-        <Route
-          path="evaluation"
-          element={(
-            <ProtectedRoute adminOnly>
-              <Suspense fallback={<LoadingSpinner size="lg" />}><Evaluation /></Suspense>
-            </ProtectedRoute>
-          )}
-        />
         <Route path="staff" element={<ProtectedRoute adminOnly><StaffManagement /></ProtectedRoute>} />
-        <Route path="survey" element={<ProtectedRoute adminOnly><SurveyPage /></ProtectedRoute>} />
         <Route path="settings" element={<ProtectedRoute adminOnly><Settings /></ProtectedRoute>} />
       </Route>
     </Routes>

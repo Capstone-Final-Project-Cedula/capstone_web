@@ -21,7 +21,6 @@ import Card from '../components/ui/Card';
 import Button from '../components/ui/Button';
 import Badge from '../components/ui/Badge';
 import AnswerPicker from '../components/interview/AnswerPicker';
-import SusSurveyDialog from '../components/sus/SusSurveyDialog';
 import { COUNTER_LINE } from '../utils/counterFlow';
 import { REQUIRED_FIELDS, missingRequiredFields } from '../utils/requiredFields';
 
@@ -34,7 +33,6 @@ const QRScan = () => {
   const [isLoading, setIsLoading] = useState(false);
   const [scannedData, setScannedData] = useState(null);
   const [showScanner, setShowScanner] = useState(false);
-  const [surveyTransactionId, setSurveyTransactionId] = useState(null);
   const [issued, setIssued] = useState(false);
   // Required fields shown as inputs: the ones blank or invalid at scan time, plus any
   // the server names in a 422. They stay inputs while being filled (plan 001.4).
@@ -113,13 +111,11 @@ const QRScan = () => {
     if (!canIssue) return;
     setIsLoading(true);
     try {
-      const result = await formsAPI.issue(scannedData.form_data, 'qr');
+      await formsAPI.issue(scannedData.form_data, 'qr');
       toast.success('Application saved.');
       setScannedData(null);
       setOpenFields([]);
-      setIssued(true);
-      // Offer the usability survey; closing it gets the scanner ready for the next applicant.
-      setSurveyTransactionId(result.data.id);
+      setIssued(true);   // "Next Applicant" gets the scanner ready again
     } catch (error) {
       console.error('Error issuing form:', error);
       // The scanned data stays on screen. A 422 names the fields to fix (a blank required one, a height
@@ -147,8 +143,7 @@ const QRScan = () => {
     setShowScanner(true);
   };
 
-  const handleSurveyClosed = () => {
-    setSurveyTransactionId(null);
+  const handleNextApplicant = () => {
     setIssued(false);
     setScannedData(null);
     setOpenFields([]);
@@ -251,7 +246,7 @@ const QRScan = () => {
               <p className="text-[var(--color-neutral-600)] max-w-md mx-auto break-words" role="status">
                 {COUNTER_LINE}
               </p>
-              <Button className="mt-6" icon={Camera} onClick={handleSurveyClosed}>
+              <Button className="mt-6" icon={Camera} onClick={handleNextApplicant}>
                 Next Applicant
               </Button>
             </Card>
@@ -399,12 +394,6 @@ const QRScan = () => {
           </div>
         </aside>
       </div>
-      <SusSurveyDialog
-        open={Boolean(surveyTransactionId)}
-        transactionId={surveyTransactionId}
-        defaultFeatures={['qr_prefill', 'form_generation']}
-        onClose={handleSurveyClosed}
-      />
     </div>
   );
 };
